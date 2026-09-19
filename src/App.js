@@ -1,652 +1,575 @@
-import { useState, useEffect, useCallback } from 'react';
-import { supabase } from './supabase';
-import { TEMPLATES } from './templates';
-
-// ── CRM Supabase (read-only, for customer lookup) ──────────
-const CRM_URL = 'https://fwjlhocedpzeijsshwjh.supabase.co';
-const CRM_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3amxob2NlZHB6ZWlqc3Nod2poIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNjc1OTMsImV4cCI6MjEwMzc0MzU5M30.jBukjNnMccX6qxnX9f3FZbukcjGB_1zfWo0iQ3xO3Es';
+import { useState, useEffect, useCallback } from "react";
+import { supabase } from "./supabase";
+import { TEMPLATES, TEMPLATE_LIST, PHASE_COLORS } from "./templates";
+// ─── CRM CUSTOMER FETCH ───────────────────────────────────────────────────────
+const CRM_URL = "https://fwjlhocedpzeijsshwjh.supabase.co";
+const CRM_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3amxob2NlZHB6ZWlqc3Nod2poIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNjc1OTMsImV4cCI6MjEwMzc0MzU5M30.jBukjNnMccX6qxnX9f3FZbukcjGB_1zfWo0iQ3xO3Es";
 
 async function fetchCRMCustomers() {
-  const res = await fetch(`${CRM_URL}/rest/v1/customers?select=id,company_name,product_interest,status&order=company_name.asc&status=neq.lost`, {
-    headers: { 'apikey': CRM_KEY, 'Authorization': `Bearer ${CRM_KEY}` }
-  });
-  if (!res.ok) return [];
-  return res.json();
+  try {
+    const res = await fetch(
+      `${CRM_URL}/rest/v1/customers?select=id,company_name,product_interest,status&order=company_name.asc`,
+      { headers: { "apikey": CRM_KEY, "Authorization": `Bearer ${CRM_KEY}` } }
+    );
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
 }
 
-// ── Helpers ────────────────────────────────────────────────
-function getTemplate(templateId) {
-  return TEMPLATES.find(t => t.id === templateId) || null;
+
+
+// ─── BRAND ────────────────────────────────────────────────────────────────────
+const C = {
+  blue: "#1B3A6B", blueMid: "#2352A0", blueLight: "#3B72C8",
+  orange: "#F5891F", orangeLight: "#FDECD6",
+  white: "#FFFFFF", bg: "#F4F7FB", border: "#DDE6F0",
+  textDark: "#1B3A6B", textMid: "#4A6080", textLight: "#8DA0B8",
+};
+
+const LOCAL_KEY = "di-session-v2";
+const saveSession = (d) => { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); } catch {} };
+const loadSession = () => { try { return JSON.parse(localStorage.getItem(LOCAL_KEY)); } catch { return null; } };
+
+function Logo({ height = 36, white = true }) {
+  return <img src={white ? "/logo-white.png" : "/logo.png"} alt="Delta Iris" style={{ height, objectFit: "contain" }} />;
 }
 
-function getAllTasks(template, customTpl) {
-  if (customTpl) return customTpl.tasks || [];
-  if (template) return template.tasks || [];
-  return [];
-}
+const ICON_OPTIONS = ["📋","🚢","🏦","🏛️","📦","✈️","🧪","⚗️","🔄","📁","📝","💼","🔑","🛳️","📊","🧾","🏭","🚛","📬","💰"];
+const COLOR_OPTIONS = ["#2352A0","#F5891F","#16A34A","#E11D48","#9333EA","#0369A1","#D97706","#065F46","#0F766E","#6D28D9","#DC2626","#0284C7"];
 
-function getPhases(template, customTpl) {
-  if (customTpl) return customTpl.phases || [];
-  if (template) return template.phases || [...new Set((template.tasks || []).map(t => t.phase))];
-  return [];
-}
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin, loading, error }) {
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [isNew, setIsNew] = useState(false);
+  const [pin2, setPin2] = useState("");
+  const ready = name.trim() && pin.length === 4 && (!isNew || pin === pin2);
 
-// ── Status color ───────────────────────────────────────────
-function progressColor(pct) {
-  if (pct === 100) return '#16a34a';
-  if (pct >= 60) return '#7c3aed';
-  if (pct >= 30) return '#d97706';
-  return '#1E4FA0';
-}
-
-// ══════════════════════════════════════════════════════════
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [tab, setTab] = useState('shipments');
-  const [shipments, setShipments] = useState([]);
-  const [customTemplates, setCustomTemplates] = useState([]);
-  const [activeShipment, setActiveShipment] = useState(null);
-  const [activeCustomTpl, setActiveCustomTpl] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [view, setView] = useState('list'); // list | shipment | template-edit | new-shipment | new-template
-  const [editingTemplate, setEditingTemplate] = useState(null);
-  const [filterTemplate, setFilterTemplate] = useState('all');
-
-  // Auth
-  const [loginName, setLoginName] = useState('');
-  const [loginPin, setLoginPin] = useState('');
-  const [loginError, setLoginError] = useState('');
-
-  // New shipment form
-  const [newShipName, setNewShipName] = useState('');
-  const [newShipTemplate, setNewShipTemplate] = useState('');
-  const [newShipCRM, setNewShipCRM] = useState('');
-  const [newShipCRMName, setNewShipCRMName] = useState('');
-  const [newShipCRMProduct, setNewShipCRMProduct] = useState('');
-  const [crmCustomers, setCRMCustomers] = useState([]);
-
-  useEffect(() => {
-    const saved = sessionStorage.getItem('di_nexus_user');
-    if (saved) setUser(JSON.parse(saved));
-  }, []);
-
-  useEffect(() => {
-    if (user) {
-      loadShipments();
-      loadCustomTemplates();
-    }
-  }, [user]);
-
-  async function signIn() {
-    setLoginError('');
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .ilike('name', loginName.trim())
-      .eq('pin', loginPin.trim())
-      .single();
-    if (error || !data) { setLoginError('Invalid name or PIN.'); return; }
-    const u = { id: data.id, name: data.name };
-    setUser(u);
-    sessionStorage.setItem('di_nexus_user', JSON.stringify(u));
-  }
-
-  async function signOut() {
-    setUser(null);
-    sessionStorage.removeItem('di_nexus_user');
-    setView('list');
-    setActiveShipment(null);
-  }
-
-  async function loadShipments() {
-    const { data } = await supabase.from('shipments').select('*').order('created_at', { ascending: false });
-    setShipments(data || []);
-  }
-
-  async function loadCustomTemplates() {
-    const { data } = await supabase.from('custom_templates').select('*').order('created_at', { ascending: false });
-    setCustomTemplates(data || []);
-  }
-
-  // ── Open a shipment ──────────────────────────────────────
-  async function openShipment(ship) {
-    setLoading(true);
-    setActiveShipment(ship);
-    // Check if it's a custom template
-    const customTpl = customTemplates.find(t => t.id === ship.template_id) || null;
-    setActiveCustomTpl(customTpl);
-    setView('shipment');
-    setLoading(false);
-  }
-
-  // ── Toggle task ──────────────────────────────────────────
-  async function toggleTask(taskId) {
-    if (!activeShipment) return;
-    const completed = { ...(activeShipment.completed || {}) };
-    if (completed[taskId]) {
-      delete completed[taskId];
-    } else {
-      completed[taskId] = { by: user.name, at: new Date().toISOString() };
-    }
-    const updated = { ...activeShipment, completed, last_updated_by: user.name };
-    await supabase.from('shipments').update({ completed, last_updated_by: user.name }).eq('id', activeShipment.id);
-    setActiveShipment(updated);
-    setShipments(prev => prev.map(s => s.id === activeShipment.id ? updated : s));
-  }
-
-  // ── Create shipment ──────────────────────────────────────
-  async function createShipment() {
-    if (!newShipName.trim() || !newShipTemplate) return;
-    const payload = {
-      name: newShipName.trim(),
-      template_id: newShipTemplate,
-      created_by: user.name,
-      last_updated_by: user.name,
-      completed: {},
-      crm_customer_id: newShipCRM || null,
-      crm_customer_name: newShipCRMName || null,
-      crm_product: newShipCRMProduct || null,
-    };
-    const { data } = await supabase.from('shipments').insert(payload).select().single();
-    if (data) {
-      setShipments(prev => [data, ...prev]);
-      setNewShipName(''); setNewShipTemplate(''); setNewShipCRM('');
-      setNewShipCRMName(''); setNewShipCRMProduct('');
-      setView('list');
-    }
-  }
-
-  // ── Delete shipment ──────────────────────────────────────
-  async function deleteShipment(id) {
-    if (!window.confirm('Delete this shipment?')) return;
-    await supabase.from('shipments').delete().eq('id', id);
-    setShipments(prev => prev.filter(s => s.id !== id));
-    if (activeShipment?.id === id) { setView('list'); setActiveShipment(null); }
-  }
-
-  // ── Load CRM customers when opening new shipment form ───
-  async function openNewShipment() {
-    setView('new-shipment');
-    const customers = await fetchCRMCustomers();
-    setCRMCustomers(customers);
-  }
-
-  // ── Template editing ─────────────────────────────────────
-  function openTemplateEdit(tpl) {
-    setEditingTemplate(JSON.parse(JSON.stringify(tpl))); // deep copy
-    setView('template-edit');
-  }
-
-  function openNewTemplate() {
-    setEditingTemplate({
-      id: null,
-      label: '',
-      description: '',
-      icon: '📦',
-      color: '#1E4FA0',
-      phases: ['Phase 1'],
-      tasks: [{ id: 1, task: '', phase: 'Phase 1', note: '' }]
-    });
-    setView('template-edit');
-  }
-
-  async function saveTemplate() {
-    const tpl = editingTemplate;
-    if (!tpl.label.trim()) { alert('Template name required'); return; }
-    // Clean up tasks - remove empty ones
-    const tasks = tpl.tasks.filter(t => t.task.trim()).map((t, i) => ({ ...t, id: i + 1 }));
-    const phases = [...new Set(tasks.map(t => t.phase))];
-    const payload = { label: tpl.label, description: tpl.description, icon: tpl.icon, color: tpl.color, phases, tasks, created_by: user.name };
-
-    if (tpl.id) {
-      await supabase.from('custom_templates').update(payload).eq('id', tpl.id);
-      setCustomTemplates(prev => prev.map(t => t.id === tpl.id ? { ...t, ...payload } : t));
-    } else {
-      const { data } = await supabase.from('custom_templates').insert(payload).select().single();
-      if (data) setCustomTemplates(prev => [data, ...prev]);
-    }
-    setView('templates');
-    setTab('templates');
-  }
-
-  async function deleteTemplate(id) {
-    if (!window.confirm('Delete this template? Existing shipments using it will still work.')) return;
-    await supabase.from('custom_templates').delete().eq('id', id);
-    setCustomTemplates(prev => prev.filter(t => t.id !== id));
-  }
-
-  // ── Template editor helpers ──────────────────────────────
-  function addTask(phase) {
-    const maxId = Math.max(0, ...editingTemplate.tasks.map(t => t.id));
-    setEditingTemplate(prev => ({
-      ...prev,
-      tasks: [...prev.tasks, { id: maxId + 1, task: '', phase, note: '' }]
-    }));
-  }
-
-  function updateTask(idx, field, value) {
-    setEditingTemplate(prev => {
-      const tasks = [...prev.tasks];
-      tasks[idx] = { ...tasks[idx], [field]: value };
-      return { ...prev, tasks };
-    });
-  }
-
-  function removeTask(idx) {
-    setEditingTemplate(prev => ({ ...prev, tasks: prev.tasks.filter((_, i) => i !== idx) }));
-  }
-
-  function addPhase() {
-    const name = `Phase ${editingTemplate.phases.length + 1}`;
-    setEditingTemplate(prev => ({ ...prev, phases: [...prev.phases, name] }));
-  }
-
-  function updatePhase(idx, value) {
-    setEditingTemplate(prev => {
-      const phases = [...prev.phases];
-      const old = phases[idx];
-      phases[idx] = value;
-      // Update tasks that referenced the old phase name
-      const tasks = prev.tasks.map(t => t.phase === old ? { ...t, phase: value } : t);
-      return { ...prev, phases, tasks };
-    });
-  }
-
-  function removePhase(idx) {
-    setEditingTemplate(prev => {
-      const phases = prev.phases.filter((_, i) => i !== idx);
-      const removedPhase = prev.phases[idx];
-      const tasks = prev.tasks.filter(t => t.phase !== removedPhase);
-      return { ...prev, phases, tasks };
-    });
-  }
-
-  // ── Computed ─────────────────────────────────────────────
-  const allTemplateOptions = [
-    ...TEMPLATES.map(t => ({ id: t.id, label: t.label, icon: t.icon })),
-    ...customTemplates.map(t => ({ id: t.id, label: t.label, icon: t.icon }))
-  ];
-
-  const filteredShipments = filterTemplate === 'all'
-    ? shipments
-    : shipments.filter(s => s.template_id === filterTemplate);
-
-  const templateCategories = [...new Set(shipments.map(s => s.template_id))];
-
-  // ══════════════════════════════════════════════════════════
-  // RENDER
-  // ══════════════════════════════════════════════════════════
-
-  if (!user) return <LoginScreen
-    name={loginName} setName={setLoginName}
-    pin={loginPin} setPin={setLoginPin}
-    error={loginError} onLogin={signIn}
-  />;
-
-  if (view === 'shipment' && activeShipment) {
-    const template = getTemplate(activeShipment.template_id);
-    const customTpl = activeCustomTpl || customTemplates.find(t => t.id === activeShipment.template_id);
-    const tasks = getAllTasks(template, customTpl);
-    const phases = getPhases(template, customTpl);
-    const completed = activeShipment.completed || {};
-    const pct = tasks.length ? Math.round((Object.keys(completed).length / tasks.length) * 100) : 0;
-    const tplName = customTpl?.label || template?.label || activeShipment.template_id;
-
-    return (
-      <div style={styles.app}>
-        <Header user={user} onSignOut={signOut} />
-        <div style={styles.container}>
-          <button onClick={() => { setView('list'); setActiveShipment(null); }} style={styles.backBtn}>← Back</button>
-
-          <div style={styles.shipmentHeader}>
-            <div>
-              <div style={styles.shipmentLabel}>{customTpl?.icon || template?.icon || '📦'} {tplName}</div>
-              <h1 style={styles.shipmentTitle}>{activeShipment.name}</h1>
-              {activeShipment.crm_customer_name && (
-                <div style={styles.crmBadge}>🏢 {activeShipment.crm_customer_name}{activeShipment.crm_product ? ` · ${activeShipment.crm_product}` : ''}</div>
-              )}
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ ...styles.pctBadge, background: progressColor(pct) }}>{pct}%</div>
-              <div style={styles.shipMeta}>{Object.keys(completed).length} of {tasks.length} done</div>
-              {pct === 100 && <div style={styles.doneBadge}>✓ Complete</div>}
-            </div>
+  return (
+    <div style={{ minHeight: "100vh", background: `linear-gradient(160deg, ${C.blue} 0%, ${C.blueMid} 60%, ${C.blueLight} 100%)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "32px 24px" }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: "16px 28px", marginBottom: 32, boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
+        <Logo height={44} white={false} />
+      </div>
+      <div style={{ width: "100%", maxWidth: 340, background: "rgba(255,255,255,0.07)", backdropFilter: "blur(12px)", borderRadius: 20, padding: "28px 24px", border: "1px solid rgba(255,255,255,0.15)" }}>
+        <h2 style={{ color: C.white, fontSize: 20, fontWeight: 800, textAlign: "center", marginBottom: 4 }}>{isNew ? "Create Account" : "Welcome Back"}</h2>
+        <p style={{ color: "rgba(255,255,255,0.45)", fontSize: 13, textAlign: "center", marginBottom: 24 }}>DI Nexus. One platform. One team. One workflow.</p>
+        {[["YOUR NAME", name, setName, "text", "e.g. Nithin"], ["4-DIGIT PIN", pin, (v) => setPin(v.replace(/\D/g,"").slice(0,4)), "password", "••••"]].map(([label, val, setter, type, ph]) => (
+          <div key={label} style={{ marginBottom: 14 }}>
+            <label style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, fontWeight: 700, letterSpacing: 1, display: "block", marginBottom: 6 }}>{label}</label>
+            <input placeholder={ph} value={val} onChange={e => setter(e.target.value)} type={type} inputMode={type === "password" ? "numeric" : "text"}
+              style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box" }} />
           </div>
+        ))}
+        {isNew && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, fontWeight: 700, letterSpacing: 1, display: "block", marginBottom: 6 }}>CONFIRM PIN</label>
+            <input placeholder="••••" value={pin2} onChange={e => setPin2(e.target.value.replace(/\D/g,"").slice(0,4))} type="password" inputMode="numeric"
+              style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box" }} />
+            {pin.length === 4 && pin2.length === 4 && pin !== pin2 && <p style={{ color: "#FCA5A5", fontSize: 12, marginTop: 6 }}>PINs don't match</p>}
+          </div>
+        )}
+        {error && <p style={{ color: "#FCA5A5", fontSize: 12, marginTop: 10, textAlign: "center" }}>{error}</p>}
+        <button onClick={() => ready && onLogin(name.trim(), pin, isNew)} disabled={!ready || loading}
+          style={{ width: "100%", marginTop: 16, padding: 14, borderRadius: 12, border: "none", background: ready && !loading ? C.orange : "rgba(255,255,255,0.15)", color: C.white, fontSize: 15, fontWeight: 700, cursor: ready && !loading ? "pointer" : "default" }}>
+          {loading ? "Please wait…" : isNew ? "Create Account →" : "Sign In →"}
+        </button>
+        <button onClick={() => { setIsNew(!isNew); setPin(""); setPin2(""); }}
+          style={{ width: "100%", marginTop: 10, padding: 10, background: "transparent", border: "none", color: "rgba(255,255,255,0.45)", fontSize: 13, cursor: "pointer" }}>
+          {isNew ? "Already have an account? Sign in" : "New user? Create account"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
-          <ProgressBar pct={pct} color={progressColor(pct)} />
+// ─── TEMPLATE BUILDER ─────────────────────────────────────────────────────────
+function TemplateBuilder({ user, onClose, onSaved }) {
+  const [step, setStep] = useState(1); // 1=details, 2=phases+tasks
+  const [label, setLabel] = useState("");
+  const [description, setDescription] = useState("");
+  const [icon, setIcon] = useState("📋");
+  const [color, setColor] = useState("#2352A0");
+  const [phases, setPhases] = useState([{ name: "", tasks: [{ text: "", note: "" }] }]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-          {phases.map(phase => {
-            const phaseTasks = tasks.filter(t => t.phase === phase);
-            const phaseDone = phaseTasks.filter(t => completed[t.id]).length;
-            return (
-              <div key={phase} style={styles.phaseBlock}>
-                <div style={styles.phaseHeader}>
-                  <span style={styles.phaseTitle}>{phase}</span>
-                  <span style={styles.phaseCount}>{phaseDone}/{phaseTasks.length}</span>
-                </div>
-                {phaseTasks.map(task => (
-                  <div key={task.id}
-                    onClick={() => toggleTask(task.id)}
-                    style={{ ...styles.taskRow, ...(completed[task.id] ? styles.taskDone : {}) }}>
-                    <div style={{ ...styles.checkbox, ...(completed[task.id] ? styles.checkboxDone : {}) }}>
-                      {completed[task.id] && <span style={styles.checkmark}>✓</span>}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ ...styles.taskLabel, ...(completed[task.id] ? styles.taskLabelDone : {}) }}>{task.task}</div>
-                      {task.note && <div style={styles.taskNote}>📎 {task.note}</div>}
-                      {completed[task.id] && (
-                        <div style={styles.completedBy}>✓ by {completed[task.id].by} · {new Date(completed[task.id].at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</div>
-                      )}
-                    </div>
-                  </div>
+  const addPhase = () => setPhases(p => [...p, { name: "", tasks: [{ text: "", note: "" }] }]);
+  const removePhase = (pi) => setPhases(p => p.filter((_, i) => i !== pi));
+  const updatePhaseName = (pi, val) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, name: val } : ph));
+
+  const addTask = (pi) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: [...ph.tasks, { text: "", note: "" }] } : ph));
+  const removeTask = (pi, ti) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: ph.tasks.filter((_, j) => j !== ti) } : ph));
+  const updateTask = (pi, ti, field, val) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: ph.tasks.map((t, j) => j === ti ? { ...t, [field]: val } : t) } : ph));
+
+  const handleSave = async () => {
+    // Validate
+    if (!label.trim()) { setError("Please give this template a name."); return; }
+    const validPhases = phases.filter(ph => ph.name.trim());
+    if (validPhases.length === 0) { setError("Add at least one phase."); return; }
+    const allTasks = validPhases.flatMap(ph => ph.tasks.filter(t => t.text.trim()));
+    if (allTasks.length === 0) { setError("Add at least one task."); return; }
+
+    // Build template object
+    let taskId = 1;
+    const builtPhases = validPhases.map(ph => ph.name.trim());
+    const builtTasks = validPhases.flatMap(ph =>
+      ph.tasks.filter(t => t.text.trim()).map(t => ({
+        id: taskId++,
+        phase: ph.name.trim(),
+        task: t.text.trim(),
+        ...(t.note.trim() ? { note: t.note.trim() } : {}),
+      }))
+    );
+
+    const templateData = {
+      label: label.trim(),
+      description: description.trim() || label.trim(),
+      icon,
+      color,
+      phases: builtPhases,
+      tasks: builtTasks,
+      created_by: user.name,
+    };
+
+    setSaving(true);
+    const { data, error: err } = await supabase.from("custom_templates").insert(templateData).select().single();
+    setSaving(false);
+    if (err) { setError("Could not save template. Try again."); return; }
+    onSaved(data);
+  };
+
+  const iStyle = { width: "100%", boxSizing: "border-box", padding: "11px 14px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", color: C.textDark, fontFamily: "inherit", background: C.white };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 300, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: C.bg, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 560, maxHeight: "92vh", display: "flex", flexDirection: "column" }}>
+        {/* Header */}
+        <div style={{ background: `linear-gradient(135deg, ${C.blue}, ${C.blueMid})`, borderRadius: "20px 20px 0 0", padding: "18px 20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h3 style={{ color: C.white, fontSize: 17, fontWeight: 800, margin: 0 }}>Create New Template</h3>
+              <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, margin: "3px 0 0" }}>Step {step} of 2 · {step === 1 ? "Name & Style" : "Phases & Tasks"}</p>
+            </div>
+            <button onClick={onClose} style={{ background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 8, padding: "7px 11px", color: C.white, cursor: "pointer", fontSize: 16 }}>✕</button>
+          </div>
+          {/* Progress */}
+          <div style={{ height: 4, background: "rgba(255,255,255,0.15)", borderRadius: 99, marginTop: 14, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: step === 1 ? "50%" : "100%", background: C.orange, borderRadius: 99, transition: "width 0.3s ease" }} />
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: "auto", flex: 1, padding: "18px 20px" }}>
+          {step === 1 && (
+            <>
+              <label style={labelSt}>TEMPLATE NAME</label>
+              <input placeholder="e.g. Domestic Supply – BASF" value={label} onChange={e => setLabel(e.target.value)} style={{ ...iStyle, marginBottom: 14 }} />
+
+              <label style={labelSt}>DESCRIPTION (optional)</label>
+              <input placeholder="Brief description of this workflow" value={description} onChange={e => setDescription(e.target.value)} style={{ ...iStyle, marginBottom: 18 }} />
+
+              <label style={labelSt}>ICON</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 18 }}>
+                {ICON_OPTIONS.map(ic => (
+                  <button key={ic} onClick={() => setIcon(ic)}
+                    style={{ width: 42, height: 42, borderRadius: 10, border: icon === ic ? `2px solid ${color}` : `1.5px solid ${C.border}`, background: icon === ic ? `${color}15` : C.white, fontSize: 20, cursor: "pointer" }}>
+                    {ic}
+                  </button>
                 ))}
               </div>
-            );
-          })}
 
-          <div style={{ height: 40 }} />
+              <label style={labelSt}>COLOR</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                {COLOR_OPTIONS.map(cl => (
+                  <button key={cl} onClick={() => setColor(cl)}
+                    style={{ width: 32, height: 32, borderRadius: 8, border: color === cl ? `3px solid ${C.textDark}` : "none", background: cl, cursor: "pointer", outline: color === cl ? `2px solid ${cl}` : "none", outlineOffset: 2 }} />
+                ))}
+              </div>
+
+              {/* Preview */}
+              {label.trim() && (
+                <div style={{ marginTop: 16, padding: "12px 14px", background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 24 }}>{icon}</span>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 700, color, margin: 0 }}>{label}</p>
+                    <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{description || "No description"}</p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {step === 2 && (
+            <>
+              <p style={{ fontSize: 13, color: C.textMid, marginBottom: 16 }}>
+                Add phases (sections) and tasks under each phase. You can add notes to tasks for reference.
+              </p>
+              {phases.map((ph, pi) => (
+                <div key={pi} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, marginBottom: 14, overflow: "hidden" }}>
+                  {/* Phase header */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: `${color}10`, borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color, flex: 0, whiteSpace: "nowrap" }}>PHASE {pi + 1}</span>
+                    <input placeholder="Phase name e.g. Order & Payment" value={ph.name} onChange={e => updatePhaseName(pi, e.target.value)}
+                      style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", fontFamily: "inherit", fontWeight: 600, color: C.textDark }} />
+                    {phases.length > 1 && (
+                      <button onClick={() => removePhase(pi)} style={{ background: "#FEE2E2", border: "none", borderRadius: 7, padding: "6px 9px", color: "#E11D48", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                    )}
+                  </div>
+
+                  {/* Tasks */}
+                  <div style={{ padding: "10px 14px" }}>
+                    {ph.tasks.map((t, ti) => (
+                      <div key={ti} style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: C.textLight, minWidth: 18 }}>{ti + 1}</span>
+                          <input placeholder={`Task ${ti + 1} description`} value={t.text} onChange={e => updateTask(pi, ti, "text", e.target.value)}
+                            style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", fontFamily: "inherit", color: C.textDark }} />
+                          {ph.tasks.length > 1 && (
+                            <button onClick={() => removeTask(pi, ti)} style={{ background: "transparent", border: "none", color: C.textLight, cursor: "pointer", fontSize: 16, padding: "4px" }}>✕</button>
+                          )}
+                        </div>
+                        <input placeholder="Note / document reference (optional)" value={t.note} onChange={e => updateTask(pi, ti, "note", e.target.value)}
+                          style={{ width: "100%", boxSizing: "border-box", marginTop: 5, padding: "6px 10px 6px 26px", borderRadius: 8, border: `1px dashed ${C.border}`, fontSize: 12, outline: "none", fontFamily: "inherit", color: C.textMid, background: "#FAFBFC" }} />
+                      </div>
+                    ))}
+                    <button onClick={() => addTask(pi)} style={{ width: "100%", padding: "8px", borderRadius: 8, border: `1.5px dashed ${color}`, background: `${color}08`, color, fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 4 }}>
+                      + Add Task
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              <button onClick={addPhase} style={{ width: "100%", padding: "11px", borderRadius: 12, border: `1.5px dashed ${C.border}`, background: C.white, color: C.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 8 }}>
+                + Add Phase
+              </button>
+            </>
+          )}
+
+          {error && <p style={{ color: "#E11D48", fontSize: 13, marginTop: 8, fontWeight: 600 }}>{error}</p>}
+        </div>
+
+        {/* Footer buttons */}
+        <div style={{ padding: "14px 20px 32px", borderTop: `1px solid ${C.border}`, display: "flex", gap: 10 }}>
+          {step === 2 && (
+            <button onClick={() => setStep(1)} style={{ flex: 1, padding: 13, borderRadius: 12, border: `1px solid ${C.border}`, background: C.white, color: C.textMid, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+              ← Back
+            </button>
+          )}
+          {step === 1 && (
+            <button onClick={() => { if (!label.trim()) { setError("Please enter a template name."); return; } setError(""); setStep(2); }}
+              style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", background: label.trim() ? color : C.border, color: C.white, fontSize: 14, fontWeight: 700, cursor: label.trim() ? "pointer" : "default" }}>
+              Next: Add Tasks →
+            </button>
+          )}
+          {step === 2 && (
+            <button onClick={handleSave} disabled={saving}
+              style={{ flex: 2, padding: 13, borderRadius: 12, border: "none", background: saving ? C.border : C.orange, color: C.white, fontSize: 14, fontWeight: 700, cursor: saving ? "default" : "pointer", boxShadow: saving ? "none" : "0 4px 14px rgba(245,137,31,0.3)" }}>
+              {saving ? "Saving…" : "Save Template ✓"}
+            </button>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const labelSt = { fontSize: 11, fontWeight: 700, color: C.textMid, letterSpacing: 0.5, display: "block", marginBottom: 8 };
+
+
+// ─── TEMPLATE EDITOR ─────────────────────────────────────────────────────────
+function TemplateEditor({ template, user, onClose, onSaved }) {
+  const [label, setLabel] = useState(template.label || "");
+  const [description, setDescription] = useState(template.description || "");
+  const [icon, setIcon] = useState(template.icon || "📋");
+  const [color, setColor] = useState(template.color || "#2352A0");
+  // Build phases structure from flat tasks
+  const buildPhaseState = (tpl) => {
+    const phaseList = tpl.phases || [...new Set((tpl.tasks || []).map(t => t.phase))];
+    return phaseList.map(ph => ({
+      name: ph,
+      tasks: (tpl.tasks || []).filter(t => t.phase === ph).map(t => ({ text: t.task, note: t.note || "" }))
+    }));
+  };
+  const [phases, setPhases] = useState(() => buildPhaseState(template));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const addPhase = () => setPhases(p => [...p, { name: "", tasks: [{ text: "", note: "" }] }]);
+  const removePhase = (pi) => setPhases(p => p.filter((_, i) => i !== pi));
+  const updatePhaseName = (pi, val) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, name: val } : ph));
+  const addTask = (pi) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: [...ph.tasks, { text: "", note: "" }] } : ph));
+  const removeTask = (pi, ti) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: ph.tasks.filter((_, j) => j !== ti) } : ph));
+  const updateTask = (pi, ti, field, val) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: ph.tasks.map((t, j) => j === ti ? { ...t, [field]: val } : t) } : ph));
+
+  const handleSave = async () => {
+    if (!label.trim()) { setError("Template name is required."); return; }
+    const validPhases = phases.filter(ph => ph.name.trim());
+    if (!validPhases.length) { setError("Add at least one phase."); return; }
+    let taskId = 1;
+    const builtPhases = validPhases.map(ph => ph.name.trim());
+    const builtTasks = validPhases.flatMap(ph =>
+      ph.tasks.filter(t => t.text.trim()).map(t => ({
+        id: taskId++, phase: ph.name.trim(), task: t.text.trim(),
+        ...(t.note.trim() ? { note: t.note.trim() } : {}),
+      }))
     );
-  }
+    if (!builtTasks.length) { setError("Add at least one task."); return; }
+    const payload = { label: label.trim(), description: description.trim() || label.trim(), icon, color, phases: builtPhases, tasks: builtTasks };
+    setSaving(true);
+    const { data, error: err } = await supabase.from("custom_templates").update(payload).eq("id", template.id).select().single();
+    setSaving(false);
+    if (err) { setError("Could not save. Try again."); return; }
+    onSaved(data);
+  };
 
-  if (view === 'template-edit' && editingTemplate) {
-    return (
-      <div style={styles.app}>
-        <Header user={user} onSignOut={signOut} />
-        <div style={styles.container}>
-          <button onClick={() => setView('templates')} style={styles.backBtn}>← Back to Templates</button>
-          <h1 style={{ ...styles.pageTitle, marginBottom: 20 }}>{editingTemplate.id ? 'Edit Template' : 'New Template'}</h1>
+  const iStyle = { width: "100%", boxSizing: "border-box", padding: "10px 13px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 13, outline: "none", color: C.textDark, fontFamily: "inherit", background: C.white };
 
-          {/* Template meta */}
-          <div style={styles.card}>
-            <div style={styles.sectionLabel}>Template Details</div>
-            <div style={styles.formGrid}>
-              <div style={styles.formField}>
-                <label style={styles.label}>Template Name *</label>
-                <input style={styles.input} value={editingTemplate.label}
-                  onChange={e => setEditingTemplate(p => ({ ...p, label: e.target.value }))}
-                  placeholder="e.g. Synercore Export Shipment" />
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 300, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: C.bg, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 560, maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ background: `linear-gradient(135deg, ${color}, ${C.blueMid})`, borderRadius: "20px 20px 0 0", padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h3 style={{ color: C.white, fontSize: 17, fontWeight: 800, margin: 0 }}>Edit Template</h3>
+            <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, margin: "3px 0 0" }}>{label || "Untitled"}</p>
+          </div>
+          <button onClick={onClose} style={{ background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 8, padding: "7px 11px", color: C.white, cursor: "pointer", fontSize: 16 }}>✕</button>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1, padding: "16px 18px" }}>
+          {/* Meta */}
+          <div style={{ background: C.white, borderRadius: 12, padding: "14px 16px", marginBottom: 14, border: `1px solid ${C.border}` }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+              <div>
+                <label style={labelSt}>NAME</label>
+                <input value={label} onChange={e => setLabel(e.target.value)} style={iStyle} placeholder="Template name" />
               </div>
-              <div style={styles.formField}>
-                <label style={styles.label}>Description</label>
-                <input style={styles.input} value={editingTemplate.description}
-                  onChange={e => setEditingTemplate(p => ({ ...p, description: e.target.value }))}
-                  placeholder="Short description" />
+              <div>
+                <label style={labelSt}>DESCRIPTION</label>
+                <input value={description} onChange={e => setDescription(e.target.value)} style={iStyle} placeholder="Short description" />
               </div>
-              <div style={styles.formField}>
-                <label style={styles.label}>Icon (emoji)</label>
-                <input style={{ ...styles.input, width: 80 }} value={editingTemplate.icon}
-                  onChange={e => setEditingTemplate(p => ({ ...p, icon: e.target.value }))} />
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div>
+                <label style={labelSt}>ICON</label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {ICON_OPTIONS.map(ic => (
+                    <button key={ic} onClick={() => setIcon(ic)} style={{ width: 36, height: 36, borderRadius: 8, border: icon === ic ? `2px solid ${color}` : `1.5px solid ${C.border}`, background: icon === ic ? `${color}15` : C.white, fontSize: 18, cursor: "pointer" }}>{ic}</button>
+                  ))}
+                </div>
               </div>
-              <div style={styles.formField}>
-                <label style={styles.label}>Color</label>
-                <input type="color" value={editingTemplate.color}
-                  onChange={e => setEditingTemplate(p => ({ ...p, color: e.target.value }))}
-                  style={{ height: 40, width: 80, border: 'none', cursor: 'pointer', borderRadius: 6 }} />
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <label style={labelSt}>COLOR</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {COLOR_OPTIONS.map(cl => (
+                  <button key={cl} onClick={() => setColor(cl)} style={{ width: 28, height: 28, borderRadius: 6, border: color === cl ? `3px solid ${C.textDark}` : "none", background: cl, cursor: "pointer" }} />
+                ))}
               </div>
             </div>
           </div>
 
           {/* Phases & Tasks */}
-          {editingTemplate.phases.map((phase, pi) => (
-            <div key={pi} style={styles.card}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                <input
-                  value={phase}
-                  onChange={e => updatePhase(pi, e.target.value)}
-                  style={{ ...styles.input, flex: 1, fontWeight: 700, fontSize: 14 }}
-                  placeholder="Phase name" />
-                <button onClick={() => removePhase(pi)}
-                  style={styles.dangerBtn} title="Remove phase">✕ Remove Phase</button>
+          {phases.map((ph, pi) => (
+            <div key={pi} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, marginBottom: 12, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: `${color}10`, borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color, flexShrink: 0 }}>PHASE {pi + 1}</span>
+                <input value={ph.name} onChange={e => updatePhaseName(pi, e.target.value)} placeholder="Phase name"
+                  style={{ flex: 1, padding: "6px 10px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", fontFamily: "inherit", fontWeight: 600, color: C.textDark }} />
+                {phases.length > 1 && <button onClick={() => removePhase(pi)} style={{ background: "#FEE2E2", border: "none", borderRadius: 6, padding: "5px 8px", color: "#E11D48", cursor: "pointer", fontSize: 12 }}>🗑</button>}
               </div>
-
-              {editingTemplate.tasks.filter(t => t.phase === phase).map((task, _) => {
-                const idx = editingTemplate.tasks.indexOf(task);
-                return (
-                  <div key={task.id} style={styles.taskEditRow}>
-                    <div style={{ flex: 1 }}>
-                      <input
-                        value={task.task}
-                        onChange={e => updateTask(idx, 'task', e.target.value)}
-                        style={{ ...styles.input, marginBottom: 6 }}
-                        placeholder="Task description" />
-                      <input
-                        value={task.note || ''}
-                        onChange={e => updateTask(idx, 'note', e.target.value)}
-                        style={{ ...styles.input, fontSize: 12, color: '#6b7280' }}
-                        placeholder="Note / sub-items (optional)" />
+              <div style={{ padding: "10px 14px" }}>
+                {ph.tasks.map((t, ti) => (
+                  <div key={ti} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: C.textLight, minWidth: 16 }}>{ti + 1}</span>
+                      <input value={t.text} onChange={e => updateTask(pi, ti, "text", e.target.value)} placeholder={`Task ${ti + 1}`}
+                        style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", fontFamily: "inherit", color: C.textDark }} />
+                      {ph.tasks.length > 1 && <button onClick={() => removeTask(pi, ti)} style={{ background: "transparent", border: "none", color: C.textLight, cursor: "pointer", fontSize: 15 }}>✕</button>}
                     </div>
-                    <button onClick={() => removeTask(idx)} style={styles.removeTaskBtn}>✕</button>
+                    <input value={t.note} onChange={e => updateTask(pi, ti, "note", e.target.value)} placeholder="Note (optional)"
+                      style={{ width: "100%", boxSizing: "border-box", marginTop: 4, padding: "5px 10px 5px 24px", borderRadius: 7, border: `1px dashed ${C.border}`, fontSize: 11, outline: "none", fontFamily: "inherit", color: C.textMid, background: "#FAFBFC" }} />
                   </div>
-                );
-              })}
-
-              <button onClick={() => addTask(phase)} style={styles.addTaskBtn}>+ Add Task</button>
+                ))}
+                <button onClick={() => addTask(pi)} style={{ width: "100%", padding: "7px", borderRadius: 8, border: `1.5px dashed ${color}`, background: `${color}08`, color, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Add Task</button>
+              </div>
             </div>
           ))}
-
-          <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-            <button onClick={addPhase} style={styles.secondaryBtn}>+ Add Phase</button>
-          </div>
-
-          <div style={{ display: 'flex', gap: 10, marginBottom: 40 }}>
-            <button onClick={saveTemplate} style={styles.primaryBtn}>💾 Save Template</button>
-            <button onClick={() => setView('templates')} style={styles.ghostBtn}>Cancel</button>
-          </div>
+          <button onClick={addPhase} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1.5px dashed ${C.border}`, background: C.white, color: C.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 8 }}>+ Add Phase</button>
+          {error && <p style={{ color: "#E11D48", fontSize: 13, fontWeight: 600 }}>{error}</p>}
+        </div>
+        <div style={{ padding: "14px 18px 32px", borderTop: `1px solid ${C.border}`, display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: 12, borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, color: C.textMid, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: 12, borderRadius: 10, border: "none", background: saving ? C.border : C.orange, color: C.white, fontSize: 14, fontWeight: 700, cursor: saving ? "default" : "pointer" }}>
+            {saving ? "Saving…" : "💾 Save Template"}
+          </button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
-  if (view === 'new-shipment') {
-    return (
-      <div style={styles.app}>
-        <Header user={user} onSignOut={signOut} />
-        <div style={styles.container}>
-          <button onClick={() => setView('list')} style={styles.backBtn}>← Back</button>
-          <h1 style={{ ...styles.pageTitle, marginBottom: 24 }}>New Shipment</h1>
+// ─── SHIPMENT LIST ────────────────────────────────────────────────────────────
+function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelect, onNew, onNewTemplate, onEditTemplate, onLogout }) {
+  const [filter, setFilter] = useState("all");
+  const [tab, setTab] = useState("shipments"); // shipments | templates
 
-          <div style={styles.card}>
-            <div style={styles.sectionLabel}>Shipment Details</div>
-            <div style={styles.formField}>
-              <label style={styles.label}>Shipment Name *</label>
-              <input style={styles.input} value={newShipName}
-                onChange={e => setNewShipName(e.target.value)}
-                placeholder="e.g. Vitabiotics Beta Carotene 750kg" />
-            </div>
-            <div style={{ ...styles.formField, marginTop: 12 }}>
-              <label style={styles.label}>Template *</label>
-              <select style={styles.input} value={newShipTemplate}
-                onChange={e => setNewShipTemplate(e.target.value)}>
-                <option value="">— Select template —</option>
-                <optgroup label="Built-in Templates">
-                  {TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
-                </optgroup>
-                {customTemplates.length > 0 && (
-                  <optgroup label="Custom Templates">
-                    {customTemplates.map(t => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
-                  </optgroup>
-                )}
-              </select>
-            </div>
-          </div>
+  const allTemplates = [
+    ...TEMPLATE_LIST,
+    ...customTemplates.map(ct => ({ ...ct, id: ct.id, isCustom: true })),
+  ];
 
-          <div style={styles.card}>
-            <div style={styles.sectionLabel}>🏢 Link to CRM Customer (optional)</div>
-            <div style={styles.formField}>
-              <label style={styles.label}>Customer</label>
-              <select style={styles.input} value={newShipCRM}
-                onChange={e => {
-                  const cust = crmCustomers.find(c => c.id === e.target.value);
-                  setNewShipCRM(e.target.value);
-                  setNewShipCRMName(cust?.company_name || '');
-                  setNewShipCRMProduct(cust?.product_interest || '');
-                }}>
-                <option value="">— Select CRM customer —</option>
-                {crmCustomers.map(c => (
-                  <option key={c.id} value={c.id}>{c.company_name}{c.product_interest ? ` — ${c.product_interest}` : ''}</option>
-                ))}
-              </select>
-              {crmCustomers.length === 0 && (
-                <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 6 }}>Loading CRM customers...</div>
-              )}
-            </div>
-            {newShipCRMName && (
-              <div style={styles.crmPreview}>
-                🏢 <strong>{newShipCRMName}</strong>{newShipCRMProduct ? ` · ${newShipCRMProduct}` : ''}
-              </div>
-            )}
-          </div>
+  const filtered = filter === "all" ? shipments : shipments.filter(s => s.template_id === filter);
 
-          <div style={{ display: 'flex', gap: 10, marginBottom: 40 }}>
-            <button onClick={createShipment}
-              disabled={!newShipName.trim() || !newShipTemplate}
-              style={{ ...styles.primaryBtn, opacity: (!newShipName.trim() || !newShipTemplate) ? 0.5 : 1 }}>
-              Create Shipment →
-            </button>
-            <button onClick={() => setView('list')} style={styles.ghostBtn}>Cancel</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── MAIN LIST VIEW ───────────────────────────────────────
   return (
-    <div style={styles.app}>
-      <Header user={user} onSignOut={signOut} />
+    <div style={{ minHeight: "100vh", background: C.bg }}>
+      {/* Header */}
+      <div style={{ background: `linear-gradient(135deg, ${C.blue} 0%, ${C.blueMid} 100%)`, padding: "52px 20px 0", position: "sticky", top: 0, zIndex: 50 }}>
+        <div style={{ maxWidth: 560, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <Logo height={28} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ textAlign: "right" }}>
+                <p style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, margin: 0 }}>Signed in as</p>
+                <p style={{ color: C.white, fontSize: 13, fontWeight: 700, margin: 0 }}>{user.name}</p>
+              </div>
+              <button onClick={onLogout} style={{ background: "rgba(255,255,255,0.1)", border: "none", borderRadius: 8, padding: "6px 10px", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 12 }}>Sign out</button>
+            </div>
+          </div>
 
-      <div style={styles.tabBar}>
-        <button onClick={() => { setTab('shipments'); setView('list'); }}
-          style={{ ...styles.tab, ...(tab === 'shipments' ? styles.tabActive : {}) }}>
-          📦 Shipments
-        </button>
-        <button onClick={() => { setTab('templates'); setView('templates'); }}
-          style={{ ...styles.tab, ...(tab === 'templates' ? styles.tabActive : {}) }}>
-          📋 Templates
-        </button>
+          {/* Main tabs */}
+          <div style={{ display: "flex", gap: 0 }}>
+            {[["shipments", "📦 Shipments"], ["templates", "📋 Templates"]].map(([key, label]) => (
+              <button key={key} onClick={() => setTab(key)} style={{ flex: 1, padding: "10px 0", background: "transparent", border: "none", borderBottom: tab === key ? `3px solid ${C.orange}` : "3px solid transparent", color: tab === key ? C.white : "rgba(255,255,255,0.45)", fontSize: 13, fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
-      <div style={styles.container}>
-        {tab === 'shipments' && (
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "18px 16px" }}>
+
+        {/* ── SHIPMENTS TAB ── */}
+        {tab === "shipments" && (
           <>
-            <div style={styles.listHeader}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div>
-                <h1 style={styles.pageTitle}>Work Checklist</h1>
-                <div style={styles.pageSubtitle}>Shared across team · Live sync</div>
+                <h2 style={{ fontSize: 17, fontWeight: 800, color: C.textDark, margin: 0 }}>Work Checklist</h2>
+                <p style={{ fontSize: 12, color: C.textLight, margin: "3px 0 0" }}>Shared across team · Live sync</p>
               </div>
-              <button onClick={openNewShipment} style={styles.primaryBtn}>+ New</button>
+              <button onClick={onNew} style={{ background: C.orange, border: "none", borderRadius: 10, padding: "9px 16px", color: C.white, fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 12px rgba(245,137,31,0.35)" }}>
+                + New
+              </button>
             </div>
 
-            {/* Filter pills */}
-            {templateCategories.length > 1 && (
-              <div style={styles.filterBar}>
-                <button onClick={() => setFilterTemplate('all')}
-                  style={{ ...styles.pill, ...(filterTemplate === 'all' ? styles.pillActive : {}) }}>All</button>
-                {templateCategories.map(tid => {
-                  const tpl = TEMPLATES.find(t => t.id === tid) || customTemplates.find(t => t.id === tid);
-                  return (
-                    <button key={tid} onClick={() => setFilterTemplate(tid)}
-                      style={{ ...styles.pill, ...(filterTemplate === tid ? styles.pillActive : {}) }}>
-                      {tpl?.icon} {tpl?.label || tid}
-                    </button>
-                  );
-                })}
+            {/* Filter chips */}
+            <div style={{ display: "flex", gap: 6, overflowX: "auto", scrollbarWidth: "none", marginBottom: 14, paddingBottom: 2 }}>
+              {["all", ...allTemplates.map(t => t.id)].map(tid => {
+                const tmpl = allTemplates.find(t => t.id === tid);
+                const active = filter === tid;
+                return (
+                  <button key={tid} onClick={() => setFilter(tid)} style={{ flexShrink: 0, padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, background: active ? C.blue : C.white, color: active ? C.white : C.textMid, boxShadow: active ? "0 2px 8px rgba(27,58,107,0.2)" : "0 1px 3px rgba(0,0,0,0.07)", transition: "all 0.2s" }}>
+                    {tid === "all" ? "All" : `${tmpl?.icon} ${tmpl?.label}`}
+                  </button>
+                );
+              })}
+            </div>
+
+            {loading && <div style={{ textAlign: "center", padding: "60px 0", color: C.textLight }}><div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div><p>Loading…</p></div>}
+            {!loading && filtered.length === 0 && (
+              <div style={{ textAlign: "center", padding: "60px 0", color: C.textLight }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>📦</div>
+                <p style={{ fontSize: 15, fontWeight: 600 }}>No shipments yet</p>
+                <p style={{ fontSize: 13 }}>Tap "+ New" to create one</p>
               </div>
             )}
-
-            {filteredShipments.map(ship => {
-              const tpl = TEMPLATES.find(t => t.id === ship.template_id) || customTemplates.find(t => t.id === ship.template_id);
-              const tasks = getAllTasks(tpl, customTemplates.find(t => t.id === ship.template_id));
-              const doneCount = Object.keys(ship.completed || {}).length;
-              const pct = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0;
-              const isDone = pct === 100;
-
+            {filtered.map(s => {
+              const tmpl = TEMPLATES[s.template_id] || customTemplates.find(ct => ct.id === s.template_id) || { icon: "📋", label: s.template_id, color: C.blue, tasks: [] };
+              const completed = s.completed || {};
+              const done = tmpl.tasks.filter(t => completed[t.id]).length;
+              const total = tmpl.tasks.length;
+              const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+              const isComplete = total > 0 && done === total;
               return (
-                <div key={ship.id} onClick={() => openShipment(ship)}
-                  style={{ ...styles.shipCard, ...(isDone ? styles.shipCardDone : {}) }}>
-                  <div style={styles.shipCardTop}>
-                    <div>
-                      <div style={{ ...styles.shipCardTemplate, color: tpl?.color || '#1E4FA0' }}>
-                        {tpl?.icon} {tpl?.label || ship.template_id}
+                <div key={s.id} onClick={() => onSelect(s, tmpl)}
+                  style={{ background: C.white, borderRadius: 14, padding: 16, marginBottom: 12, boxShadow: "0 2px 12px rgba(27,58,107,0.07)", cursor: "pointer", border: isComplete ? "1.5px solid #86EFAC" : `1px solid ${C.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                        <span style={{ fontSize: 13 }}>{tmpl.icon}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: tmpl.color, background: `${tmpl.color}18`, padding: "2px 7px", borderRadius: 99 }}>{tmpl.label}</span>
+                        {tmpl.isCustom && <span style={{ fontSize: 9, fontWeight: 700, color: C.orange, background: C.orangeLight, padding: "2px 6px", borderRadius: 99 }}>CUSTOM</span>}
                       </div>
-                      <div style={styles.shipCardName}>{ship.name}</div>
-                      {ship.crm_customer_name && (
-                        <div style={styles.shipCRMTag}>🏢 {ship.crm_customer_name}</div>
-                      )}
-                      <div style={styles.shipMeta}>
-                        {new Date(ship.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                        {ship.last_updated_by ? ` · Last by ${ship.last_updated_by}` : ''}
-                      </div>
+                      <h3 style={{ fontSize: 15, fontWeight: 700, color: C.textDark, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</h3>
+                      {s.crm_customer_name && <span style={{ fontSize: 10, fontWeight: 700, color: C.blueMid, background: "#EEF3FB", padding: "2px 7px", borderRadius: 99, display: "inline-block", marginTop: 3, marginBottom: 2 }}>🏢 {s.crm_customer_name}</span>}
+                      <p style={{ fontSize: 11, color: C.textLight, margin: "3px 0 0" }}>
+                        {new Date(s.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                        {s.last_updated_by && <span> · Last by <strong>{s.last_updated_by}</strong></span>}
+                      </p>
                     </div>
-                    {isDone
-                      ? <div style={styles.doneBadge}>✓ Done</div>
-                      : <div style={{ ...styles.pctBadge, background: progressColor(pct) }}>{pct}%</div>}
+                    {isComplete
+                      ? <span style={{ background: "#DCFCE7", color: "#16A34A", fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 99, flexShrink: 0 }}>✓ Done</span>
+                      : <span style={{ background: C.orangeLight, color: C.orange, fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 99, flexShrink: 0 }}>{pct}%</span>}
                   </div>
-                  <ProgressBar pct={pct} color={progressColor(pct)} />
-                  <div style={styles.shipProgress}>{doneCount} of {tasks.length} tasks completed</div>
-                  <button onClick={e => { e.stopPropagation(); deleteShipment(ship.id); }}
-                    style={styles.deleteBtn} title="Delete shipment">✕</button>
+                  <div style={{ height: 5, background: C.border, borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${pct}%`, borderRadius: 99, background: isComplete ? "#22C55E" : `linear-gradient(90deg, ${tmpl.color || C.blue}, ${C.blueLight})`, transition: "width 0.4s ease" }} />
+                  </div>
+                  <p style={{ fontSize: 11, color: C.textLight, marginTop: 5 }}>{done} of {total} tasks completed</p>
                 </div>
               );
             })}
-
-            {filteredShipments.length === 0 && (
-              <div style={styles.empty}>
-                <div style={{ fontSize: 36, marginBottom: 12, opacity: 0.3 }}>📦</div>
-                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>No shipments yet</div>
-                <div style={{ color: '#6b7280', fontSize: 13 }}>Click "+ New" to create your first shipment.</div>
-              </div>
-            )}
           </>
         )}
 
-        {tab === 'templates' && (
+        {/* ── TEMPLATES TAB ── */}
+        {tab === "templates" && (
           <>
-            <div style={styles.listHeader}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div>
-                <h1 style={styles.pageTitle}>Templates</h1>
-                <div style={styles.pageSubtitle}>Built-in and custom checklists</div>
+                <h2 style={{ fontSize: 17, fontWeight: 800, color: C.textDark, margin: 0 }}>Checklist Templates</h2>
+                <p style={{ fontSize: 12, color: C.textLight, margin: "3px 0 0" }}>Built-in + your custom templates</p>
               </div>
-              <button onClick={openNewTemplate} style={styles.primaryBtn}>+ New Template</button>
+              <button onClick={onNewTemplate} style={{ background: C.orange, border: "none", borderRadius: 10, padding: "9px 14px", color: C.white, fontSize: 12, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 12px rgba(245,137,31,0.35)" }}>
+                + Create
+              </button>
             </div>
 
-            <div style={styles.sectionLabel}>Built-in Templates</div>
-            {TEMPLATES.map(t => (
-              <div key={t.id} style={styles.tplCard}>
-                <div style={{ ...styles.tplIcon, background: t.color + '22', fontSize: 22 }}>{t.icon}</div>
+            <p style={{ fontSize: 12, fontWeight: 700, color: C.textLight, letterSpacing: 0.5, marginBottom: 10 }}>BUILT-IN</p>
+            {TEMPLATE_LIST.map(tmpl => (
+              <div key={tmpl.id} style={{ background: C.white, borderRadius: 12, padding: "13px 14px", marginBottom: 10, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: `${tmpl.color}18`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{tmpl.icon}</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, color: t.color }}>{t.label}</div>
-                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{t.description} · {t.tasks?.length || 0} tasks</div>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: tmpl.color, margin: 0 }}>{tmpl.label}</p>
+                  <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{tmpl.description} · {tmpl.tasks.length} tasks</p>
                 </div>
-                <div style={{ fontSize: 11, color: '#9ca3af', background: '#f3f4f6', padding: '3px 8px', borderRadius: 6 }}>Built-in</div>
               </div>
             ))}
 
             {customTemplates.length > 0 && (
               <>
-                <div style={{ ...styles.sectionLabel, marginTop: 24 }}>Custom Templates</div>
-                {customTemplates.map(t => (
-                  <div key={t.id} style={styles.tplCard}>
-                    <div style={{ ...styles.tplIcon, background: (t.color || '#1E4FA0') + '22', fontSize: 22 }}>{t.icon}</div>
+                <p style={{ fontSize: 12, fontWeight: 700, color: C.textLight, letterSpacing: 0.5, margin: "18px 0 10px" }}>CUSTOM</p>
+                {customTemplates.map(tmpl => (
+                  <div key={tmpl.id} style={{ background: C.white, borderRadius: 12, padding: "13px 14px", marginBottom: 10, border: `1.5px solid ${tmpl.color}40`, display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: `${tmpl.color}18`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{tmpl.icon}</div>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700, color: t.color || '#1E4FA0' }}>{t.label}</div>
-                      <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{t.description} · {t.tasks?.length || 0} tasks</div>
-                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>Created by {t.created_by}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <p style={{ fontSize: 13, fontWeight: 700, color: tmpl.color, margin: 0 }}>{tmpl.label}</p>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: C.orange, background: C.orangeLight, padding: "2px 6px", borderRadius: 99 }}>CUSTOM</span>
+                      </div>
+                      <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{tmpl.description} · {tmpl.tasks.length} tasks · by {tmpl.created_by}</p>
                     </div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <button onClick={() => openTemplateEdit(t)} style={styles.editBtn}>✎ Edit</button>
-                      <button onClick={() => deleteTemplate(t.id)} style={styles.dangerBtn}>✕</button>
-                    </div>
+                    <button onClick={() => onEditTemplate(tmpl)} style={{ background: "#EEF3FB", border: "none", borderRadius: 8, padding: "7px 12px", color: C.blueMid, fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0, fontFamily: "inherit" }}>✎ Edit</button>
                   </div>
                 ))}
               </>
             )}
 
             {customTemplates.length === 0 && (
-              <div style={styles.empty}>
-                <div style={{ fontSize: 13, color: '#6b7280' }}>No custom templates yet. Click "+ New Template" to create one.</div>
+              <div style={{ textAlign: "center", padding: "32px 0", color: C.textLight, border: `1.5px dashed ${C.border}`, borderRadius: 14, marginTop: 8 }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>📋</div>
+                <p style={{ fontSize: 14, fontWeight: 600 }}>No custom templates yet</p>
+                <p style={{ fontSize: 12 }}>Tap "+ Create" to build your own</p>
               </div>
             )}
           </>
@@ -656,132 +579,348 @@ export default function App() {
   );
 }
 
-// ── Sub-components ─────────────────────────────────────────
-function Header({ user, onSignOut }) {
-  return (
-    <header style={styles.header}>
-      <div style={styles.headerBrand}>
-        <img src="/logo.png" alt="Delta Iris" style={{ height: 32, marginRight: 10 }} onError={e => e.target.style.display='none'} />
-        <span style={styles.headerTitle}>Delta Iris</span>
-      </div>
-      <div style={styles.headerUser}>
-        <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, marginRight: 6 }}>Signed in as</span>
-        <span style={{ fontWeight: 700, color: 'white', marginRight: 12 }}>{user.name}</span>
-        <button onClick={onSignOut} style={styles.signOutBtn}>Sign out</button>
-      </div>
-    </header>
-  );
-}
+// ─── NEW SHIPMENT MODAL ───────────────────────────────────────────────────────
+function NewShipmentModal({ onClose, onCreate, creating, customTemplates }) {
+  const [name, setName] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [crmCustomers, setCRMCustomers] = useState([]);
+  const [crmId, setCrmId] = useState("");
+  const [crmName, setCrmName] = useState("");
+  const [crmProduct, setCrmProduct] = useState("");
+  const [loadingCRM, setLoadingCRM] = useState(true);
 
-function ProgressBar({ pct, color }) {
+  useEffect(() => {
+    fetchCRMCustomers().then(data => { setCRMCustomers(data); setLoadingCRM(false); });
+  }, []);
+  const allTemplates = [
+    ...TEMPLATE_LIST,
+    ...customTemplates.map(ct => ({ ...ct, id: ct.id, isCustom: true })),
+  ];
+  const ready = name.trim() && templateId;
+
   return (
-    <div style={styles.progressTrack}>
-      <div style={{ ...styles.progressFill, width: `${pct}%`, background: color }} />
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: C.white, borderRadius: "20px 20px 0 0", padding: "20px 20px 44px", width: "100%", maxWidth: 500, maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ width: 36, height: 4, background: C.border, borderRadius: 99, margin: "0 auto 18px" }} />
+        <h3 style={{ fontSize: 18, fontWeight: 800, color: C.textDark, marginBottom: 4 }}>New Shipment</h3>
+        <p style={{ color: C.textLight, fontSize: 13, marginBottom: 18 }}>Choose a checklist type and give it a name</p>
+
+        <label style={labelSt}>CHECKLIST TYPE</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+          {allTemplates.map(tmpl => {
+            const sel = templateId === tmpl.id;
+            return (
+              <div key={tmpl.id} onClick={() => setTemplateId(tmpl.id)}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 12, border: sel ? `2px solid ${tmpl.color}` : `1.5px solid ${C.border}`, background: sel ? `${tmpl.color}0A` : C.white, cursor: "pointer", transition: "all 0.15s" }}>
+                <span style={{ fontSize: 22 }}>{tmpl.icon}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: sel ? tmpl.color : C.textDark, margin: 0 }}>{tmpl.label}</p>
+                    {tmpl.isCustom && <span style={{ fontSize: 9, fontWeight: 700, color: C.orange, background: C.orangeLight, padding: "2px 5px", borderRadius: 99 }}>CUSTOM</span>}
+                  </div>
+                  <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{tmpl.description} · {tmpl.tasks.length} tasks</p>
+                </div>
+                {sel && <div style={{ width: 18, height: 18, borderRadius: "50%", background: tmpl.color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 3.5L3.5 6.5L9 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </div>}
+              </div>
+            );
+          })}
+        </div>
+
+        <label style={labelSt}>LINK TO CRM CUSTOMER (optional)</label>
+        <div style={{ marginBottom: 18 }}>
+          {loadingCRM
+            ? <p style={{ fontSize: 12, color: C.textLight }}>Loading CRM customers…</p>
+            : <select value={crmId} onChange={e => {
+                const c = crmCustomers.find(x => x.id === e.target.value);
+                setCrmId(e.target.value);
+                setCrmName(c?.company_name || "");
+                setCrmProduct(c?.product_interest || "");
+              }} style={{ width: "100%", padding: "11px 14px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit", color: C.textDark, background: C.white, boxSizing: "border-box" }}>
+                <option value="">— No customer link —</option>
+                {crmCustomers.map(c => (
+                  <option key={c.id} value={c.id}>{c.company_name}{c.product_interest ? ` · ${c.product_interest}` : ""}</option>
+                ))}
+              </select>}
+          {crmName && (
+            <div style={{ marginTop: 8, background: "#EEF3FB", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: C.blueMid, fontWeight: 600 }}>
+              🏢 {crmName}{crmProduct ? ` · ${crmProduct}` : ""}
+            </div>
+          )}
+        </div>
+
+        <label style={labelSt}>SHIPMENT NAME / REFERENCE</label>
+        <input autoFocus placeholder="e.g. Vitabiotics May 2026 or PO-1045"
+          value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && ready && onCreate(name.trim(), templateId, crmId, crmName, crmProduct)}
+          style={{ width: "100%", boxSizing: "border-box", padding: "13px 16px", borderRadius: 12, border: `1.5px solid ${C.border}`, fontSize: 15, outline: "none", marginBottom: 14, color: C.textDark, fontFamily: "inherit" }} />
+
+        <button onClick={() => ready && onCreate(name.trim(), templateId, crmId, crmName, crmProduct)} disabled={!ready || creating}
+          style={{ width: "100%", padding: 14, borderRadius: 12, border: "none", background: ready && !creating ? C.orange : C.border, color: ready && !creating ? C.white : C.textLight, fontSize: 15, fontWeight: 700, cursor: ready && !creating ? "pointer" : "default", boxShadow: ready ? "0 4px 14px rgba(245,137,31,0.3)" : "none" }}>
+          {creating ? "Creating…" : "Create Shipment"}
+        </button>
+      </div>
     </div>
   );
 }
 
-function LoginScreen({ name, setName, pin, setPin, error, onLogin }) {
+// ─── CHECKLIST SCREEN ─────────────────────────────────────────────────────────
+function ChecklistScreen({ shipment, tmpl, user, onUpdate, onBack }) {
+  const [activePhase, setActivePhase] = useState("All");
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [completed, setCompleted] = useState(shipment.completed || {});
+
+  useEffect(() => { setCompleted(shipment.completed || {}); }, [shipment.completed]);
+
+  const toggle = async (id) => {
+    const updated = { ...completed, [id]: !completed[id] };
+    setCompleted(updated);
+    setSaving(true);
+    await onUpdate(shipment.id, updated);
+    setSaving(false);
+  };
+
+  const totalDone = tmpl.tasks.filter(t => completed[t.id]).length;
+  const total = tmpl.tasks.length;
+  const progress = total > 0 ? Math.round((totalDone / total) * 100) : 0;
+
+  const filtered = tmpl.tasks.filter(t => {
+    const phaseMatch = activePhase === "All" || t.phase === activePhase;
+    const searchMatch = !search || t.task.toLowerCase().includes(search.toLowerCase());
+    return phaseMatch && searchMatch;
+  });
+
+  const phaseProgress = (phase) => {
+    const pts = tmpl.tasks.filter(t => t.phase === phase);
+    return { done: pts.filter(t => completed[t.id]).length, total: pts.length };
+  };
+
+  const phases = tmpl.phases || [...new Set(tmpl.tasks.map(t => t.phase))];
+
   return (
-    <div style={styles.loginBg}>
-      <div style={styles.loginLogo}>
-        <img src="/logo.png" alt="Delta Iris" style={{ height: 60 }} onError={e => e.target.style.display='none'} />
-        <div style={{ fontWeight: 800, fontSize: 22, color: '#1E4FA0', marginTop: 8 }}>Delta Iris</div>
-      </div>
-      <div style={styles.loginCard}>
-        <h2 style={styles.loginTitle}>Welcome Back</h2>
-        <p style={styles.loginSub}>DI Nexus. One platform. One team. One workflow.</p>
-        {error && <div style={styles.loginError}>{error}</div>}
-        <label style={styles.loginLabel}>YOUR NAME</label>
-        <input style={styles.loginInput} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Nithin" />
-        <label style={{ ...styles.loginLabel, marginTop: 16 }}>4-DIGIT PIN</label>
-        <input style={styles.loginInput} type="password" maxLength={4} value={pin}
-          onChange={e => setPin(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && onLogin()} placeholder="••••" />
-        <button onClick={onLogin} style={styles.loginBtn}>Sign In →</button>
-        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>
-          New user? Contact your admin.
+    <div style={{ minHeight: "100vh", background: C.bg, paddingBottom: 80 }}>
+      <div style={{ background: `linear-gradient(135deg, ${C.blue} 0%, ${C.blueMid} 100%)`, padding: "52px 20px 18px", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 4px 24px rgba(0,0,0,0.2)" }}>
+        <div style={{ maxWidth: 600, margin: "0 auto" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <button onClick={onBack} style={{ background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 9, padding: "7px 12px", color: C.white, cursor: "pointer", fontSize: 15, fontWeight: 700 }}>←</button>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                <span style={{ fontSize: 13 }}>{tmpl.icon}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 0.5 }}>{tmpl.label}</span>
+                {saving && <span style={{ color: C.orange, fontSize: 11, fontWeight: 600 }}>· Saving…</span>}
+              </div>
+              <h1 style={{ color: C.white, fontSize: 16, fontWeight: 800, margin: 0 }}>{shipment.name}</h1>
+              {shipment.crm_customer_name && <span style={{ fontSize: 10, fontWeight: 700, color: C.orange, background: "rgba(255,255,255,0.12)", padding: "2px 8px", borderRadius: 99, marginTop: 3, display: "inline-block" }}>🏢 {shipment.crm_customer_name}</span>}
+            </div>
+            <Logo height={22} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+              <span style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, fontWeight: 700, letterSpacing: 0.5 }}>PROGRESS</span>
+              <span style={{ color: C.orange, fontSize: 13, fontWeight: 700 }}>{totalDone}/{total} · {progress}%</span>
+            </div>
+            <div style={{ height: 7, background: "rgba(255,255,255,0.12)", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progress}%`, background: `linear-gradient(90deg, ${C.orange}, #FFB347)`, borderRadius: 99, transition: "width 0.5s ease" }} />
+            </div>
+          </div>
+          <div style={{ position: "relative" }}>
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.4 }}>🔍</span>
+            <input placeholder="Search tasks…" value={search} onChange={e => setSearch(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 10, color: C.white, fontSize: 14, padding: "8px 12px 8px 32px", outline: "none" }} />
+          </div>
         </div>
       </div>
+
+      <div style={{ maxWidth: 600, margin: "0 auto", padding: "0 16px" }}>
+        <div style={{ display: "flex", gap: 7, overflowX: "auto", padding: "13px 0 7px", scrollbarWidth: "none" }}>
+          {["All", ...phases].map(ph => {
+            const active = activePhase === ph;
+            const pp = ph !== "All" ? phaseProgress(ph) : null;
+            return (
+              <button key={ph} onClick={() => setActivePhase(ph)} style={{ flexShrink: 0, padding: "5px 11px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, background: active ? C.blue : C.white, color: active ? C.white : C.textMid, boxShadow: active ? "0 2px 8px rgba(27,58,107,0.25)" : "0 1px 3px rgba(0,0,0,0.07)", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 4 }}>
+                {ph === "All" ? "All Phases" : ph}
+                {pp && <span style={{ background: pp.done === pp.total ? "#22C55E" : "rgba(0,0,0,0.08)", color: pp.done === pp.total ? C.white : C.textLight, borderRadius: 10, padding: "1px 5px", fontSize: 10, fontWeight: 700 }}>{pp.done}/{pp.total}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        {phases.filter(ph => activePhase === "All" || activePhase === ph).map(phase => {
+          const phaseTasks = filtered.filter(t => t.phase === phase);
+          if (!phaseTasks.length) return null;
+          const colors = PHASE_COLORS[phase] || { accent: tmpl.color || C.blue, bg: `${tmpl.color || C.blue}10`, light: `${tmpl.color || C.blue}30` };
+          const pp = phaseProgress(phase);
+          const phaseDone = pp.done === pp.total && pp.total > 0;
+
+          return (
+            <div key={phase} style={{ marginBottom: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: colors.bg, borderRadius: "12px 12px 0 0", borderLeft: `4px solid ${colors.accent}` }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent, textTransform: "uppercase", letterSpacing: 0.5 }}>{phase}</span>
+                <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                  {phaseDone && <span style={{ fontSize: 10, fontWeight: 700, color: "#16A34A", background: "#DCFCE7", padding: "2px 7px", borderRadius: 99 }}>✓ Complete</span>}
+                  <span style={{ fontSize: 11, fontWeight: 600, color: colors.accent, opacity: 0.7 }}>{pp.done}/{pp.total}</span>
+                </div>
+              </div>
+              <div style={{ background: C.white, borderRadius: "0 0 12px 12px", border: `1px solid ${C.border}`, borderTop: "none", overflow: "hidden", boxShadow: "0 2px 8px rgba(27,58,107,0.05)" }}>
+                {phaseTasks.map((t, idx) => {
+                  const done = !!completed[t.id];
+                  return (
+                    <div key={t.id}>
+                      <div onClick={() => toggle(t.id)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderTop: idx === 0 ? "none" : `1px solid ${C.border}`, cursor: "pointer", background: done ? "#F8FFF9" : C.white, transition: "background 0.15s", userSelect: "none" }}>
+                        <div style={{ width: 22, height: 22, borderRadius: 6, border: done ? `2px solid ${colors.accent}` : `2px solid ${C.border}`, background: done ? colors.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" }}>
+                          {done && <svg width="11" height="8" viewBox="0 0 11 8" fill="none"><path d="M1 3.5L4 6.5L10 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: done ? colors.accent : C.border, minWidth: 18 }}>{t.id}</span>
+                        <span style={{ fontSize: 14, fontWeight: 500, color: done ? C.textLight : C.textDark, textDecoration: done ? "line-through" : "none", flex: 1, lineHeight: 1.4, transition: "all 0.2s" }}>{t.task}</span>
+                      </div>
+                      {t.note && (
+                        <div style={{ padding: "7px 16px 9px 50px", background: colors.bg, borderTop: `1px dashed ${colors.light}`, fontSize: 11, color: colors.accent, lineHeight: 1.6 }}>
+                          📎 {t.note}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ── Styles ─────────────────────────────────────────────────
-const styles = {
-  app: { minHeight: '100vh', background: '#f5f7fa', fontFamily: "'Inter', sans-serif" },
-  header: { background: 'linear-gradient(135deg, #1E4FA0, #163d82)', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 2px 8px rgba(0,0,0,0.15)' },
-  headerBrand: { display: 'flex', alignItems: 'center' },
-  headerTitle: { color: 'white', fontWeight: 800, fontSize: 18 },
-  headerUser: { display: 'flex', alignItems: 'center' },
-  signOutBtn: { background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: 8, padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' },
-  tabBar: { background: 'linear-gradient(135deg, #1E4FA0, #163d82)', display: 'flex', padding: '0 24px', borderBottom: '1px solid rgba(255,255,255,0.1)' },
-  tab: { background: 'none', border: 'none', color: 'rgba(255,255,255,0.6)', padding: '14px 20px', fontSize: 14, fontWeight: 600, cursor: 'pointer', borderBottom: '3px solid transparent', fontFamily: 'inherit' },
-  tabActive: { color: 'white', borderBottom: '3px solid #F58220' },
-  container: { maxWidth: 720, margin: '0 auto', padding: '24px 16px' },
-  listHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 },
-  pageTitle: { fontSize: 22, fontWeight: 800, color: '#111827', margin: 0 },
-  pageSubtitle: { fontSize: 13, color: '#6b7280', marginTop: 4 },
-  backBtn: { background: 'none', border: 'none', color: '#6b7280', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '0 0 16px', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 },
-  filterBar: { display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' },
-  pill: { border: '1.5px solid #e5e7eb', borderRadius: 20, padding: '5px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: 'white', color: '#374151', fontFamily: 'inherit' },
-  pillActive: { background: '#1E4FA0', borderColor: '#1E4FA0', color: 'white' },
-  shipCard: { background: 'white', borderRadius: 12, padding: '16px 18px', marginBottom: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', border: '1.5px solid #e5e7eb', cursor: 'pointer', position: 'relative', transition: 'box-shadow 0.15s' },
-  shipCardDone: { borderColor: '#16a34a', background: '#f0fdf4' },
-  shipCardTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
-  shipCardTemplate: { fontSize: 12, fontWeight: 700, marginBottom: 4 },
-  shipCardName: { fontSize: 16, fontWeight: 700, color: '#111827', marginBottom: 4 },
-  shipCRMTag: { fontSize: 11, color: '#1E4FA0', fontWeight: 600, background: '#e8eef8', display: 'inline-block', padding: '2px 8px', borderRadius: 8, marginBottom: 4 },
-  shipMeta: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
-  pctBadge: { color: 'white', fontWeight: 800, fontSize: 13, padding: '4px 10px', borderRadius: 20 },
-  doneBadge: { background: '#dcfce7', color: '#16a34a', fontWeight: 700, fontSize: 12, padding: '4px 10px', borderRadius: 20 },
-  progressTrack: { background: '#e5e7eb', borderRadius: 4, height: 6, overflow: 'hidden', margin: '8px 0' },
-  progressFill: { height: '100%', borderRadius: 4, transition: 'width 0.4s ease' },
-  shipProgress: { fontSize: 12, color: '#6b7280', marginTop: 4 },
-  deleteBtn: { position: 'absolute', top: 12, right: 12, background: 'none', border: 'none', color: '#d1d5db', fontSize: 14, cursor: 'pointer', padding: 4, borderRadius: 4 },
-  tplCard: { background: 'white', borderRadius: 10, padding: '14px 16px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.07)', border: '1px solid #e5e7eb' },
-  tplIcon: { width: 44, height: 44, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  card: { background: 'white', borderRadius: 12, padding: '18px 20px', marginBottom: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', border: '1px solid #e5e7eb' },
-  sectionLabel: { fontSize: 11, fontWeight: 700, color: '#1E4FA0', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 },
-  formGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
-  formField: { display: 'flex', flexDirection: 'column', gap: 5 },
-  label: { fontSize: 12, fontWeight: 600, color: '#374151' },
-  input: { border: '1.5px solid #e5e7eb', borderRadius: 8, padding: '9px 12px', fontSize: 13, fontFamily: 'inherit', width: '100%', boxSizing: 'border-box', outline: 'none' },
-  primaryBtn: { background: '#1E4FA0', color: 'white', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
-  secondaryBtn: { background: '#e8eef8', color: '#1E4FA0', border: 'none', borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
-  ghostBtn: { background: 'none', border: '1.5px solid #e5e7eb', color: '#6b7280', borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
-  editBtn: { background: '#e8eef8', color: '#1E4FA0', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
-  dangerBtn: { background: '#fef2f2', color: '#dc2626', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
-  taskEditRow: { display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 10, padding: '10px 12px', background: '#f9fafb', borderRadius: 8, border: '1px solid #e5e7eb' },
-  removeTaskBtn: { background: 'none', border: 'none', color: '#dc2626', fontSize: 16, cursor: 'pointer', padding: '8px 4px', flexShrink: 0 },
-  addTaskBtn: { background: '#f0f4fc', color: '#1E4FA0', border: '1.5px dashed #1E4FA0', borderRadius: 8, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer', width: '100%', fontFamily: 'inherit', marginTop: 6 },
-  phaseBlock: { background: 'white', borderRadius: 12, marginBottom: 16, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.07)', border: '1px solid #e5e7eb' },
-  phaseHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#f8fafc', borderBottom: '1px solid #e5e7eb' },
-  phaseTitle: { fontWeight: 700, fontSize: 13, color: '#1E4FA0' },
-  phaseCount: { fontSize: 12, color: '#6b7280', fontWeight: 500 },
-  taskRow: { display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', borderBottom: '1px solid #f3f4f6', cursor: 'pointer', transition: 'background 0.1s' },
-  taskDone: { background: '#f0fdf4' },
-  taskLabel: { fontSize: 13, fontWeight: 500, color: '#111827' },
-  taskLabelDone: { color: '#9ca3af', textDecoration: 'line-through' },
-  taskNote: { fontSize: 11, color: '#6b7280', marginTop: 4, lineHeight: 1.4 },
-  completedBy: { fontSize: 11, color: '#16a34a', marginTop: 4, fontWeight: 500 },
-  checkbox: { width: 20, height: 20, border: '2px solid #d1d5db', borderRadius: 5, flexShrink: 0, marginTop: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s' },
-  checkboxDone: { background: '#16a34a', borderColor: '#16a34a' },
-  checkmark: { color: 'white', fontSize: 12, fontWeight: 800 },
-  shipmentHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 12 },
-  shipmentLabel: { fontSize: 13, fontWeight: 700, color: '#1E4FA0', marginBottom: 4 },
-  shipmentTitle: { fontSize: 22, fontWeight: 800, color: '#111827', margin: 0 },
-  shipMeta: { fontSize: 12, color: '#9ca3af', marginTop: 4 },
-  crmBadge: { fontSize: 12, color: '#1E4FA0', fontWeight: 600, background: '#e8eef8', display: 'inline-block', padding: '4px 10px', borderRadius: 8, marginTop: 6 },
-  crmPreview: { marginTop: 10, background: '#e8eef8', border: '1px solid #c7d9f5', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#1E4FA0' },
-  empty: { textAlign: 'center', padding: '40px 20px', background: 'white', borderRadius: 12, border: '1px solid #e5e7eb' },
-  loginBg: { minHeight: '100vh', background: 'linear-gradient(135deg, #1E4FA0 0%, #0f2d60 100%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  loginLogo: { textAlign: 'center', marginBottom: 24 },
-  loginCard: { background: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)', borderRadius: 20, padding: '32px 28px', width: '100%', maxWidth: 380, border: '1px solid rgba(255,255,255,0.2)' },
-  loginTitle: { color: 'white', fontSize: 22, fontWeight: 800, margin: '0 0 6px', textAlign: 'center' },
-  loginSub: { color: 'rgba(255,255,255,0.6)', fontSize: 13, textAlign: 'center', marginBottom: 24 },
-  loginError: { background: 'rgba(220,38,38,0.2)', color: '#fca5a5', borderRadius: 8, padding: '10px 14px', fontSize: 13, marginBottom: 16 },
-  loginLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', display: 'block', marginBottom: 6 },
-  loginInput: { width: '100%', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 10, padding: '12px 16px', color: 'white', fontSize: 14, fontFamily: 'inherit', boxSizing: 'border-box', outline: 'none', marginBottom: 4 },
-  loginBtn: { width: '100%', background: '#F58220', color: 'white', border: 'none', borderRadius: 10, padding: '14px', fontSize: 15, fontWeight: 700, cursor: 'pointer', marginTop: 20, fontFamily: 'inherit' },
-};
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [screen, setScreen]               = useState("loading");
+  const [user, setUser]                   = useState(null);
+  const [shipments, setShipments]         = useState([]);
+  const [customTemplates, setCustomTemplates] = useState([]);
+  const [activeShipment, setActive]       = useState(null);
+  const [activeTmpl, setActiveTmpl]       = useState(null);
+  const [authLoading, setAuthLoading]     = useState(false);
+  const [authError, setAuthError]         = useState("");
+  const [dataLoading, setDataLoading]     = useState(false);
+  const [showNew, setShowNew]             = useState(false);
+  const [showBuilder, setShowBuilder]     = useState(false);
+  const [showEditor, setShowEditor]       = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(null);
+  const [creating, setCreating]           = useState(false);
+
+  useEffect(() => {
+    const session = loadSession();
+    if (session?.user) { setUser(session.user); setScreen("list"); }
+    else setScreen("login");
+  }, []);
+
+  const fetchShipments = useCallback(async () => {
+    setDataLoading(true);
+    const [{ data: ships }, { data: ctmpls }] = await Promise.all([
+      supabase.from("shipments").select("*").order("created_at", { ascending: false }),
+      supabase.from("custom_templates").select("*").order("created_at", { ascending: false }),
+    ]);
+    setDataLoading(false);
+    if (ships) setShipments(ships);
+    if (ctmpls) setCustomTemplates(ctmpls);
+  }, []);
+
+  useEffect(() => {
+    if (screen !== "list" && screen !== "checklist") return;
+    fetchShipments();
+    const channel = supabase.channel("realtime-all")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shipments" }, payload => {
+        if (payload.eventType === "INSERT") setShipments(prev => [payload.new, ...prev]);
+        else if (payload.eventType === "UPDATE") {
+          setShipments(prev => prev.map(s => s.id === payload.new.id ? payload.new : s));
+          setActive(prev => prev?.id === payload.new.id ? payload.new : prev);
+        } else if (payload.eventType === "DELETE") setShipments(prev => prev.filter(s => s.id !== payload.old.id));
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "custom_templates" }, payload => {
+        setCustomTemplates(prev => [payload.new, ...prev]);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [screen, fetchShipments]);
+
+  const handleLogin = async (name, pin, isNew) => {
+    setAuthLoading(true); setAuthError("");
+    if (isNew) {
+      const { data: existing } = await supabase.from("users").select("id").eq("name", name).single();
+      if (existing) { setAuthError("Name already taken. Choose another."); setAuthLoading(false); return; }
+      const { data, error } = await supabase.from("users").insert({ name, pin }).select().single();
+      if (error || !data) { setAuthError("Could not create account. Try again."); setAuthLoading(false); return; }
+      const u = { id: data.id, name: data.name };
+      setUser(u); saveSession({ user: u }); setScreen("list");
+    } else {
+      const { data, error } = await supabase.from("users").select("*").eq("name", name).eq("pin", pin).single();
+      if (error || !data) { setAuthError("Name or PIN is incorrect."); setAuthLoading(false); return; }
+      const u = { id: data.id, name: data.name };
+      setUser(u); saveSession({ user: u }); setScreen("list");
+    }
+    setAuthLoading(false);
+  };
+
+  const handleLogout = () => { localStorage.removeItem(LOCAL_KEY); setUser(null); setScreen("login"); setShipments([]); };
+
+  const handleCreate = async (name, templateId, crmId, crmName, crmProduct) => {
+    setCreating(true);
+    const { data, error } = await supabase.from("shipments").insert({
+      name, template_id: templateId, completed: {},
+      created_by: user.name, last_updated_by: user.name,
+      crm_customer_id: crmId || null,
+      crm_customer_name: crmName || null,
+      crm_product: crmProduct || null,
+    }).select().single();
+    setCreating(false);
+    if (!error && data) {
+      const tmpl = TEMPLATES[templateId] || customTemplates.find(ct => ct.id === templateId);
+      setShowNew(false); setActive(data); setActiveTmpl(tmpl); setScreen("checklist");
+    }
+  };
+
+  const handleUpdate = async (shipmentId, completed) => {
+    await supabase.from("shipments").update({ completed, last_updated_by: user.name }).eq("id", shipmentId);
+  };
+
+  const handleTemplateSaved = (newTmpl) => {
+    setCustomTemplates(prev => [newTmpl, ...prev]);
+    setShowBuilder(false);
+  };
+
+  const handleTemplateEdited = (updatedTmpl) => {
+    setCustomTemplates(prev => prev.map(t => t.id === updatedTmpl.id ? updatedTmpl : t));
+    setShowEditor(false);
+    setEditingTemplate(null);
+  };
+
+  if (screen === "loading") return (
+    <div style={{ minHeight: "100vh", background: C.blue, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <Logo height={48} />
+    </div>
+  );
+
+  return (
+    <div style={{ fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
+      {screen === "login" && <LoginScreen onLogin={handleLogin} loading={authLoading} error={authError} />}
+      {screen === "list" && (
+        <ShipmentListScreen user={user} shipments={shipments} loading={dataLoading} customTemplates={customTemplates}
+          onSelect={(s, tmpl) => { setActive(s); setActiveTmpl(tmpl); setScreen("checklist"); }}
+          onNew={() => setShowNew(true)}
+          onNewTemplate={() => setShowBuilder(true)}
+          onEditTemplate={(tmpl) => { setEditingTemplate(tmpl); setShowEditor(true); }}
+          onLogout={handleLogout}
+        />
+      )}
+      {screen === "checklist" && activeShipment && activeTmpl && (
+        <ChecklistScreen shipment={activeShipment} tmpl={activeTmpl} user={user} onUpdate={handleUpdate}
+          onBack={() => { setScreen("list"); fetchShipments(); }} />
+      )}
+      {showNew && <NewShipmentModal onClose={() => setShowNew(false)} onCreate={handleCreate} creating={creating} customTemplates={customTemplates} />}
+      {showBuilder && <TemplateBuilder user={user} onClose={() => setShowBuilder(false)} onSaved={handleTemplateSaved} />}
+      {showEditor && editingTemplate && <TemplateEditor template={editingTemplate} user={user} onClose={() => { setShowEditor(false); setEditingTemplate(null); }} onSaved={handleTemplateEdited} />}
+    </div>
+  );
+}
