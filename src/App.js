@@ -4,15 +4,12 @@ import { TEMPLATES, TEMPLATE_LIST, PHASE_COLORS } from "./templates";
 // ─── CRM CUSTOMER FETCH ───────────────────────────────────────────────────────
 const CRM_URL = "https://fwjlhocedpzeijsshwjh.supabase.co";
 const CRM_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3amxob2NlZHB6ZWlqc3Nod2poIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNjc1OTMsImV4cCI6MjEwMzc0MzU5M30.jBukjNnMccX6qxnX9f3FZbukcjGB_1zfWo0iQ3xO3Es";
-
 async function fetchCRMCustomers() {
   try {
-    const res = await fetch(
-      `${CRM_URL}/rest/v1/customers?select=id,company_name,product_interest,status&order=company_name.asc`,
-      { headers: { "apikey": CRM_KEY, "Authorization": `Bearer ${CRM_KEY}` } }
-    );
-    if (!res.ok) return [];
-    return res.json();
+    const res = await fetch(`${CRM_URL}/rest/v1/customers?select=id,company_name,product_interest&order=company_name.asc`, {
+      headers: { "apikey": CRM_KEY, "Authorization": `Bearer ${CRM_KEY}` }
+    });
+    return res.ok ? res.json() : [];
   } catch { return []; }
 }
 
@@ -278,129 +275,101 @@ const labelSt = { fontSize: 11, fontWeight: 700, color: C.textMid, letterSpacing
 
 
 // ─── TEMPLATE EDITOR ─────────────────────────────────────────────────────────
-function TemplateEditor({ template, user, onClose, onSaved }) {
+function TemplateEditor({ template, onClose, onSaved }) {
   const [label, setLabel] = useState(template.label || "");
   const [description, setDescription] = useState(template.description || "");
   const [icon, setIcon] = useState(template.icon || "📋");
   const [color, setColor] = useState(template.color || "#2352A0");
-  // Build phases structure from flat tasks
-  const buildPhaseState = (tpl) => {
-    const phaseList = tpl.phases || [...new Set((tpl.tasks || []).map(t => t.phase))];
-    return phaseList.map(ph => ({
-      name: ph,
-      tasks: (tpl.tasks || []).filter(t => t.phase === ph).map(t => ({ text: t.task, note: t.note || "" }))
-    }));
+  const buildPhases = (tpl) => {
+    const pList = tpl.phases || [...new Set((tpl.tasks||[]).map(t => t.phase))];
+    return pList.map(ph => ({ name: ph, tasks: (tpl.tasks||[]).filter(t => t.phase === ph).map(t => ({ text: t.task, note: t.note||"" })) }));
   };
-  const [phases, setPhases] = useState(() => buildPhaseState(template));
+  const [phases, setPhases] = useState(() => buildPhases(template));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const addPhase = () => setPhases(p => [...p, { name: "", tasks: [{ text: "", note: "" }] }]);
-  const removePhase = (pi) => setPhases(p => p.filter((_, i) => i !== pi));
-  const updatePhaseName = (pi, val) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, name: val } : ph));
-  const addTask = (pi) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: [...ph.tasks, { text: "", note: "" }] } : ph));
-  const removeTask = (pi, ti) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: ph.tasks.filter((_, j) => j !== ti) } : ph));
-  const updateTask = (pi, ti, field, val) => setPhases(p => p.map((ph, i) => i === pi ? { ...ph, tasks: ph.tasks.map((t, j) => j === ti ? { ...t, [field]: val } : t) } : ph));
+  const removePhase = (pi) => setPhases(p => p.filter((_,i) => i !== pi));
+  const updatePhaseName = (pi, val) => setPhases(p => p.map((ph,i) => i===pi ? {...ph, name: val} : ph));
+  const addTask = (pi) => setPhases(p => p.map((ph,i) => i===pi ? {...ph, tasks: [...ph.tasks, {text:"",note:""}]} : ph));
+  const removeTask = (pi, ti) => setPhases(p => p.map((ph,i) => i===pi ? {...ph, tasks: ph.tasks.filter((_,j) => j!==ti)} : ph));
+  const updateTask = (pi, ti, field, val) => setPhases(p => p.map((ph,i) => i===pi ? {...ph, tasks: ph.tasks.map((t,j) => j===ti ? {...t,[field]:val} : t)} : ph));
 
   const handleSave = async () => {
-    if (!label.trim()) { setError("Template name is required."); return; }
+    if (!label.trim()) { setError("Name required."); return; }
     const validPhases = phases.filter(ph => ph.name.trim());
     if (!validPhases.length) { setError("Add at least one phase."); return; }
-    let taskId = 1;
-    const builtPhases = validPhases.map(ph => ph.name.trim());
-    const builtTasks = validPhases.flatMap(ph =>
-      ph.tasks.filter(t => t.text.trim()).map(t => ({
-        id: taskId++, phase: ph.name.trim(), task: t.text.trim(),
-        ...(t.note.trim() ? { note: t.note.trim() } : {}),
-      }))
-    );
+    let tid = 1;
+    const builtTasks = validPhases.flatMap(ph => ph.tasks.filter(t => t.text.trim()).map(t => ({ id: tid++, phase: ph.name.trim(), task: t.text.trim(), ...(t.note.trim()?{note:t.note.trim()}:{}) })));
     if (!builtTasks.length) { setError("Add at least one task."); return; }
-    const payload = { label: label.trim(), description: description.trim() || label.trim(), icon, color, phases: builtPhases, tasks: builtTasks };
+    const payload = { label: label.trim(), description: description.trim()||label.trim(), icon, color, phases: validPhases.map(ph=>ph.name.trim()), tasks: builtTasks };
     setSaving(true);
     const { data, error: err } = await supabase.from("custom_templates").update(payload).eq("id", template.id).select().single();
     setSaving(false);
-    if (err) { setError("Could not save. Try again."); return; }
+    if (err) { setError("Could not save."); return; }
     onSaved(data);
   };
 
-  const iStyle = { width: "100%", boxSizing: "border-box", padding: "10px 13px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 13, outline: "none", color: C.textDark, fontFamily: "inherit", background: C.white };
+  const iSt = { width:"100%", boxSizing:"border-box", padding:"9px 12px", borderRadius:9, border:`1.5px solid ${C.border}`, fontSize:13, outline:"none", color:C.textDark, fontFamily:"inherit", background:C.white };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 300, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:300, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
       onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{ background: C.bg, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 560, maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
-        <div style={{ background: `linear-gradient(135deg, ${color}, ${C.blueMid})`, borderRadius: "20px 20px 0 0", padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ background:C.bg, borderRadius:"20px 20px 0 0", width:"100%", maxWidth:560, maxHeight:"94vh", display:"flex", flexDirection:"column" }}>
+        <div style={{ background:`linear-gradient(135deg,${color},${C.blueMid})`, borderRadius:"20px 20px 0 0", padding:"16px 20px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div>
-            <h3 style={{ color: C.white, fontSize: 17, fontWeight: 800, margin: 0 }}>Edit Template</h3>
-            <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, margin: "3px 0 0" }}>{label || "Untitled"}</p>
+            <h3 style={{ color:C.white, fontSize:17, fontWeight:800, margin:0 }}>Edit Template</h3>
+            <p style={{ color:"rgba(255,255,255,0.5)", fontSize:12, margin:"3px 0 0" }}>{label||"Untitled"}</p>
           </div>
-          <button onClick={onClose} style={{ background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 8, padding: "7px 11px", color: C.white, cursor: "pointer", fontSize: 16 }}>✕</button>
+          <button onClick={onClose} style={{ background:"rgba(255,255,255,0.12)", border:"none", borderRadius:8, padding:"7px 11px", color:C.white, cursor:"pointer", fontSize:16 }}>✕</button>
         </div>
-        <div style={{ overflowY: "auto", flex: 1, padding: "16px 18px" }}>
-          {/* Meta */}
-          <div style={{ background: C.white, borderRadius: 12, padding: "14px 16px", marginBottom: 14, border: `1px solid ${C.border}` }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-              <div>
-                <label style={labelSt}>NAME</label>
-                <input value={label} onChange={e => setLabel(e.target.value)} style={iStyle} placeholder="Template name" />
-              </div>
-              <div>
-                <label style={labelSt}>DESCRIPTION</label>
-                <input value={description} onChange={e => setDescription(e.target.value)} style={iStyle} placeholder="Short description" />
-              </div>
+        <div style={{ overflowY:"auto", flex:1, padding:"16px 18px" }}>
+          <div style={{ background:C.white, borderRadius:12, padding:"14px", marginBottom:14, border:`1px solid ${C.border}` }}>
+            <label style={labelSt}>NAME</label>
+            <input value={label} onChange={e=>setLabel(e.target.value)} style={{...iSt, marginBottom:10}} placeholder="Template name"/>
+            <label style={labelSt}>DESCRIPTION</label>
+            <input value={description} onChange={e=>setDescription(e.target.value)} style={{...iSt, marginBottom:10}} placeholder="Short description"/>
+            <label style={labelSt}>ICON</label>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
+              {ICON_OPTIONS.map(ic => <button key={ic} onClick={()=>setIcon(ic)} style={{ width:36, height:36, borderRadius:8, border:icon===ic?`2px solid ${color}`:`1.5px solid ${C.border}`, background:icon===ic?`${color}15`:C.white, fontSize:18, cursor:"pointer" }}>{ic}</button>)}
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <div>
-                <label style={labelSt}>ICON</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {ICON_OPTIONS.map(ic => (
-                    <button key={ic} onClick={() => setIcon(ic)} style={{ width: 36, height: 36, borderRadius: 8, border: icon === ic ? `2px solid ${color}` : `1.5px solid ${C.border}`, background: icon === ic ? `${color}15` : C.white, fontSize: 18, cursor: "pointer" }}>{ic}</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div style={{ marginTop: 10 }}>
-              <label style={labelSt}>COLOR</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {COLOR_OPTIONS.map(cl => (
-                  <button key={cl} onClick={() => setColor(cl)} style={{ width: 28, height: 28, borderRadius: 6, border: color === cl ? `3px solid ${C.textDark}` : "none", background: cl, cursor: "pointer" }} />
-                ))}
-              </div>
+            <label style={labelSt}>COLOR</label>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+              {COLOR_OPTIONS.map(cl => <button key={cl} onClick={()=>setColor(cl)} style={{ width:28, height:28, borderRadius:6, border:color===cl?`3px solid ${C.textDark}`:"none", background:cl, cursor:"pointer" }}/>)}
             </div>
           </div>
 
-          {/* Phases & Tasks */}
           {phases.map((ph, pi) => (
-            <div key={pi} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, marginBottom: 12, overflow: "hidden" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: `${color}10`, borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color, flexShrink: 0 }}>PHASE {pi + 1}</span>
-                <input value={ph.name} onChange={e => updatePhaseName(pi, e.target.value)} placeholder="Phase name"
-                  style={{ flex: 1, padding: "6px 10px", borderRadius: 7, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", fontFamily: "inherit", fontWeight: 600, color: C.textDark }} />
-                {phases.length > 1 && <button onClick={() => removePhase(pi)} style={{ background: "#FEE2E2", border: "none", borderRadius: 6, padding: "5px 8px", color: "#E11D48", cursor: "pointer", fontSize: 12 }}>🗑</button>}
+            <div key={pi} style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, marginBottom:12, overflow:"hidden" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 14px", background:`${color}10`, borderBottom:`1px solid ${C.border}` }}>
+                <span style={{ fontSize:11, fontWeight:700, color, flexShrink:0 }}>PHASE {pi+1}</span>
+                <input value={ph.name} onChange={e=>updatePhaseName(pi,e.target.value)} placeholder="Phase name"
+                  style={{ flex:1, padding:"6px 10px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, outline:"none", fontFamily:"inherit", fontWeight:600, color:C.textDark }}/>
+                {phases.length > 1 && <button onClick={()=>removePhase(pi)} style={{ background:"#FEE2E2", border:"none", borderRadius:6, padding:"5px 8px", color:"#E11D48", cursor:"pointer", fontSize:12 }}>🗑</button>}
               </div>
-              <div style={{ padding: "10px 14px" }}>
+              <div style={{ padding:"10px 14px" }}>
                 {ph.tasks.map((t, ti) => (
-                  <div key={ti} style={{ marginBottom: 10 }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: C.textLight, minWidth: 16 }}>{ti + 1}</span>
-                      <input value={t.text} onChange={e => updateTask(pi, ti, "text", e.target.value)} placeholder={`Task ${ti + 1}`}
-                        style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", fontFamily: "inherit", color: C.textDark }} />
-                      {ph.tasks.length > 1 && <button onClick={() => removeTask(pi, ti)} style={{ background: "transparent", border: "none", color: C.textLight, cursor: "pointer", fontSize: 15 }}>✕</button>}
+                  <div key={ti} style={{ marginBottom:10 }}>
+                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <span style={{ fontSize:11, fontWeight:700, color:C.textLight, minWidth:16 }}>{ti+1}</span>
+                      <input value={t.text} onChange={e=>updateTask(pi,ti,"text",e.target.value)} placeholder={`Task ${ti+1}`}
+                        style={{ flex:1, padding:"7px 10px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, outline:"none", fontFamily:"inherit", color:C.textDark }}/>
+                      {ph.tasks.length > 1 && <button onClick={()=>removeTask(pi,ti)} style={{ background:"transparent", border:"none", color:C.textLight, cursor:"pointer", fontSize:15 }}>✕</button>}
                     </div>
-                    <input value={t.note} onChange={e => updateTask(pi, ti, "note", e.target.value)} placeholder="Note (optional)"
-                      style={{ width: "100%", boxSizing: "border-box", marginTop: 4, padding: "5px 10px 5px 24px", borderRadius: 7, border: `1px dashed ${C.border}`, fontSize: 11, outline: "none", fontFamily: "inherit", color: C.textMid, background: "#FAFBFC" }} />
+                    <input value={t.note} onChange={e=>updateTask(pi,ti,"note",e.target.value)} placeholder="Note (optional)"
+                      style={{ width:"100%", boxSizing:"border-box", marginTop:4, padding:"5px 10px 5px 24px", borderRadius:7, border:`1px dashed ${C.border}`, fontSize:11, outline:"none", fontFamily:"inherit", color:C.textMid, background:"#FAFBFC" }}/>
                   </div>
                 ))}
-                <button onClick={() => addTask(pi)} style={{ width: "100%", padding: "7px", borderRadius: 8, border: `1.5px dashed ${color}`, background: `${color}08`, color, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Add Task</button>
+                <button onClick={()=>addTask(pi)} style={{ width:"100%", padding:"7px", borderRadius:8, border:`1.5px dashed ${color}`, background:`${color}08`, color, fontSize:12, fontWeight:600, cursor:"pointer" }}>+ Add Task</button>
               </div>
             </div>
           ))}
-          <button onClick={addPhase} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1.5px dashed ${C.border}`, background: C.white, color: C.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 8 }}>+ Add Phase</button>
-          {error && <p style={{ color: "#E11D48", fontSize: 13, fontWeight: 600 }}>{error}</p>}
+          <button onClick={addPhase} style={{ width:"100%", padding:"10px", borderRadius:10, border:`1.5px dashed ${C.border}`, background:C.white, color:C.textMid, fontSize:13, fontWeight:600, cursor:"pointer", marginBottom:8 }}>+ Add Phase</button>
+          {error && <p style={{ color:"#E11D48", fontSize:13, fontWeight:600 }}>{error}</p>}
         </div>
-        <div style={{ padding: "14px 18px 32px", borderTop: `1px solid ${C.border}`, display: "flex", gap: 10 }}>
-          <button onClick={onClose} style={{ flex: 1, padding: 12, borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, color: C.textMid, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: 12, borderRadius: 10, border: "none", background: saving ? C.border : C.orange, color: C.white, fontSize: 14, fontWeight: 700, cursor: saving ? "default" : "pointer" }}>
+        <div style={{ padding:"14px 18px 32px", borderTop:`1px solid ${C.border}`, display:"flex", gap:10 }}>
+          <button onClick={onClose} style={{ flex:1, padding:12, borderRadius:10, border:`1px solid ${C.border}`, background:C.white, color:C.textMid, fontSize:14, fontWeight:700, cursor:"pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ flex:2, padding:12, borderRadius:10, border:"none", background:saving?C.border:C.orange, color:C.white, fontSize:14, fontWeight:700, cursor:saving?"default":"pointer" }}>
             {saving ? "Saving…" : "💾 Save Template"}
           </button>
         </div>
@@ -410,7 +379,7 @@ function TemplateEditor({ template, user, onClose, onSaved }) {
 }
 
 // ─── SHIPMENT LIST ────────────────────────────────────────────────────────────
-function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelect, onNew, onNewTemplate, onEditTemplate, onEditBuiltin, onLogout }) {
+function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelect, onNew, onNewTemplate, onDelete, onEditTemplate, onEditBuiltin, onLogout }) {
   const [filter, setFilter] = useState("all");
   const [tab, setTab] = useState("shipments"); // shipments | templates
 
@@ -502,7 +471,6 @@ function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelec
                         {tmpl.isCustom && <span style={{ fontSize: 9, fontWeight: 700, color: C.orange, background: C.orangeLight, padding: "2px 6px", borderRadius: 99 }}>CUSTOM</span>}
                       </div>
                       <h3 style={{ fontSize: 15, fontWeight: 700, color: C.textDark, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</h3>
-                      {s.crm_customer_name && <span style={{ fontSize: 10, fontWeight: 700, color: C.blueMid, background: "#EEF3FB", padding: "2px 7px", borderRadius: 99, display: "inline-block", marginTop: 3, marginBottom: 2 }}>🏢 {s.crm_customer_name}</span>}
                       <p style={{ fontSize: 11, color: C.textLight, margin: "3px 0 0" }}>
                         {new Date(s.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
                         {s.last_updated_by && <span> · Last by <strong>{s.last_updated_by}</strong></span>}
@@ -516,6 +484,10 @@ function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelec
                     <div style={{ height: "100%", width: `${pct}%`, borderRadius: 99, background: isComplete ? "#22C55E" : `linear-gradient(90deg, ${tmpl.color || C.blue}, ${C.blueLight})`, transition: "width 0.4s ease" }} />
                   </div>
                   <p style={{ fontSize: 11, color: C.textLight, marginTop: 5 }}>{done} of {total} tasks completed</p>
+                  <button onClick={e => { e.stopPropagation(); onDelete(s.id, s.name); }}
+                    style={{ marginTop: 8, padding: "5px 12px", borderRadius: 8, border: "1px solid #fee2e2", background: "#fff5f5", color: "#dc2626", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                    🗑 Delete
+                  </button>
                 </div>
               );
             })}
@@ -543,7 +515,7 @@ function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelec
                   <p style={{ fontSize: 13, fontWeight: 700, color: tmpl.color, margin: 0 }}>{tmpl.label}</p>
                   <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{tmpl.description} · {tmpl.tasks.length} tasks</p>
                 </div>
-                <button onClick={() => onEditBuiltin(tmpl)} style={{ background: "#EEF3FB", border: "none", borderRadius: 8, padding: "7px 12px", color: C.blueMid, fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0, fontFamily: "inherit" }}>✎ Edit</button>
+                <button onClick={() => onEditBuiltin(tmpl)} style={{ flexShrink: 0, padding: "7px 13px", borderRadius: 8, border: "none", background: "#EEF3FB", color: C.blueMid, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✎ Edit</button>
               </div>
             ))}
 
@@ -560,7 +532,7 @@ function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelec
                       </div>
                       <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{tmpl.description} · {tmpl.tasks.length} tasks · by {tmpl.created_by}</p>
                     </div>
-                    <button onClick={() => onEditTemplate(tmpl)} style={{ background: "#EEF3FB", border: "none", borderRadius: 8, padding: "7px 12px", color: C.blueMid, fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0, fontFamily: "inherit" }}>✎ Edit</button>
+                    <button onClick={() => onEditTemplate(tmpl)} style={{ flexShrink: 0, padding: "7px 13px", borderRadius: 8, border: "none", background: "#EEF3FB", color: C.blueMid, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>✎ Edit</button>
                   </div>
                 ))}
               </>
@@ -584,15 +556,11 @@ function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelec
 function NewShipmentModal({ onClose, onCreate, creating, customTemplates }) {
   const [name, setName] = useState("");
   const [templateId, setTemplateId] = useState("");
-  const [crmCustomers, setCRMCustomers] = useState([]);
+  const [crmCustomers, setCrmCustomers] = useState([]);
   const [crmId, setCrmId] = useState("");
   const [crmName, setCrmName] = useState("");
   const [crmProduct, setCrmProduct] = useState("");
-  const [loadingCRM, setLoadingCRM] = useState(true);
-
-  useEffect(() => {
-    fetchCRMCustomers().then(data => { setCRMCustomers(data); setLoadingCRM(false); });
-  }, []);
+  useEffect(() => { fetchCRMCustomers().then(setCrmCustomers); }, []);
   const allTemplates = [
     ...TEMPLATE_LIST,
     ...customTemplates.map(ct => ({ ...ct, id: ct.id, isCustom: true })),
@@ -631,26 +599,14 @@ function NewShipmentModal({ onClose, onCreate, creating, customTemplates }) {
         </div>
 
         <label style={labelSt}>LINK TO CRM CUSTOMER (optional)</label>
-        <div style={{ marginBottom: 18 }}>
-          {loadingCRM
-            ? <p style={{ fontSize: 12, color: C.textLight }}>Loading CRM customers…</p>
-            : <select value={crmId} onChange={e => {
-                const c = crmCustomers.find(x => x.id === e.target.value);
-                setCrmId(e.target.value);
-                setCrmName(c?.company_name || "");
-                setCrmProduct(c?.product_interest || "");
-              }} style={{ width: "100%", padding: "11px 14px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit", color: C.textDark, background: C.white, boxSizing: "border-box" }}>
-                <option value="">— No customer link —</option>
-                {crmCustomers.map(c => (
-                  <option key={c.id} value={c.id}>{c.company_name}{c.product_interest ? ` · ${c.product_interest}` : ""}</option>
-                ))}
-              </select>}
-          {crmName && (
-            <div style={{ marginTop: 8, background: "#EEF3FB", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: C.blueMid, fontWeight: 600 }}>
-              🏢 {crmName}{crmProduct ? ` · ${crmProduct}` : ""}
-            </div>
-          )}
-        </div>
+        <select value={crmId} onChange={e => {
+          const c = crmCustomers.find(x => x.id === e.target.value);
+          setCrmId(e.target.value); setCrmName(c?.company_name||""); setCrmProduct(c?.product_interest||"");
+        }} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 12, border: `1.5px solid ${C.border}`, fontSize: 13, fontFamily: "inherit", color: C.textDark, marginBottom: 6 }}>
+          <option value="">— No customer link —</option>
+          {crmCustomers.map(c => <option key={c.id} value={c.id}>{c.company_name}{c.product_interest ? ` · ${c.product_interest}` : ""}</option>)}
+        </select>
+        {crmName && <div style={{ background: "#EEF3FB", borderRadius: 8, padding: "7px 12px", fontSize: 12, color: C.blueMid, fontWeight: 600, marginBottom: 14 }}>🏢 {crmName}</div>}
 
         <label style={labelSt}>SHIPMENT NAME / REFERENCE</label>
         <input autoFocus placeholder="e.g. Vitabiotics May 2026 or PO-1045"
@@ -714,7 +670,6 @@ function ChecklistScreen({ shipment, tmpl, user, onUpdate, onBack }) {
                 {saving && <span style={{ color: C.orange, fontSize: 11, fontWeight: 600 }}>· Saving…</span>}
               </div>
               <h1 style={{ color: C.white, fontSize: 16, fontWeight: 800, margin: 0 }}>{shipment.name}</h1>
-              {shipment.crm_customer_name && <span style={{ fontSize: 10, fontWeight: 700, color: C.orange, background: "rgba(255,255,255,0.12)", padding: "2px 8px", borderRadius: 99, marginTop: 3, display: "inline-block" }}>🏢 {shipment.crm_customer_name}</span>}
             </div>
             <Logo height={22} />
           </div>
@@ -882,6 +837,12 @@ export default function App() {
     }
   };
 
+  const handleDelete = async (id, name) => {
+    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    await supabase.from("shipments").delete().eq("id", id);
+    setShipments(prev => prev.filter(s => s.id !== id));
+  };
+
   const handleUpdate = async (shipmentId, completed) => {
     await supabase.from("shipments").update({ completed, last_updated_by: user.name }).eq("id", shipmentId);
   };
@@ -893,35 +854,15 @@ export default function App() {
 
   const handleTemplateEdited = (updatedTmpl) => {
     setCustomTemplates(prev => prev.map(t => t.id === updatedTmpl.id ? updatedTmpl : t));
-    setShowEditor(false);
-    setEditingTemplate(null);
+    setShowEditor(false); setEditingTemplate(null);
   };
 
   const handleEditBuiltin = async (tmpl) => {
-    // Check if a custom copy already exists for this builtin
     const existing = customTemplates.find(ct => ct.source_id === tmpl.id);
-    if (existing) {
-      setEditingTemplate(existing);
-      setShowEditor(true);
-      return;
-    }
-    // Create a custom copy from the builtin
-    const payload = {
-      label: tmpl.label + " (Custom)",
-      description: tmpl.description,
-      icon: tmpl.icon,
-      color: tmpl.color,
-      phases: tmpl.phases || [...new Set(tmpl.tasks.map(t => t.phase))],
-      tasks: tmpl.tasks,
-      created_by: user.name,
-      source_id: tmpl.id,
-    };
+    if (existing) { setEditingTemplate(existing); setShowEditor(true); return; }
+    const payload = { label: tmpl.label + " (Custom)", description: tmpl.description, icon: tmpl.icon, color: tmpl.color, phases: tmpl.phases || [...new Set(tmpl.tasks.map(t=>t.phase))], tasks: tmpl.tasks, created_by: user.name, source_id: tmpl.id };
     const { data } = await supabase.from("custom_templates").insert(payload).select().single();
-    if (data) {
-      setCustomTemplates(prev => [data, ...prev]);
-      setEditingTemplate(data);
-      setShowEditor(true);
-    }
+    if (data) { setCustomTemplates(prev => [data, ...prev]); setEditingTemplate(data); setShowEditor(true); }
   };
 
   if (screen === "loading") return (
@@ -938,6 +879,7 @@ export default function App() {
           onSelect={(s, tmpl) => { setActive(s); setActiveTmpl(tmpl); setScreen("checklist"); }}
           onNew={() => setShowNew(true)}
           onNewTemplate={() => setShowBuilder(true)}
+          onDelete={handleDelete}
           onEditTemplate={(tmpl) => { setEditingTemplate(tmpl); setShowEditor(true); }}
           onEditBuiltin={handleEditBuiltin}
           onLogout={handleLogout}
@@ -949,7 +891,7 @@ export default function App() {
       )}
       {showNew && <NewShipmentModal onClose={() => setShowNew(false)} onCreate={handleCreate} creating={creating} customTemplates={customTemplates} />}
       {showBuilder && <TemplateBuilder user={user} onClose={() => setShowBuilder(false)} onSaved={handleTemplateSaved} />}
-      {showEditor && editingTemplate && <TemplateEditor template={editingTemplate} user={user} onClose={() => { setShowEditor(false); setEditingTemplate(null); }} onSaved={handleTemplateEdited} />}
+      {showEditor && editingTemplate && <TemplateEditor template={editingTemplate} onClose={() => { setShowEditor(false); setEditingTemplate(null); }} onSaved={handleTemplateEdited} />}
     </div>
   );
 }
