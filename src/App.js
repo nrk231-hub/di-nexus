@@ -410,7 +410,7 @@ function TemplateEditor({ template, user, onClose, onSaved }) {
 }
 
 // ─── SHIPMENT LIST ────────────────────────────────────────────────────────────
-function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelect, onNew, onNewTemplate, onEditTemplate, onLogout }) {
+function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelect, onNew, onNewTemplate, onEditTemplate, onEditBuiltin, onLogout }) {
   const [filter, setFilter] = useState("all");
   const [tab, setTab] = useState("shipments"); // shipments | templates
 
@@ -543,6 +543,7 @@ function ShipmentListScreen({ user, shipments, loading, customTemplates, onSelec
                   <p style={{ fontSize: 13, fontWeight: 700, color: tmpl.color, margin: 0 }}>{tmpl.label}</p>
                   <p style={{ fontSize: 11, color: C.textLight, margin: "2px 0 0" }}>{tmpl.description} · {tmpl.tasks.length} tasks</p>
                 </div>
+                <button onClick={() => onEditBuiltin(tmpl)} style={{ background: "#EEF3FB", border: "none", borderRadius: 8, padding: "7px 12px", color: C.blueMid, fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0, fontFamily: "inherit" }}>✎ Edit</button>
               </div>
             ))}
 
@@ -896,6 +897,33 @@ export default function App() {
     setEditingTemplate(null);
   };
 
+  const handleEditBuiltin = async (tmpl) => {
+    // Check if a custom copy already exists for this builtin
+    const existing = customTemplates.find(ct => ct.source_id === tmpl.id);
+    if (existing) {
+      setEditingTemplate(existing);
+      setShowEditor(true);
+      return;
+    }
+    // Create a custom copy from the builtin
+    const payload = {
+      label: tmpl.label + " (Custom)",
+      description: tmpl.description,
+      icon: tmpl.icon,
+      color: tmpl.color,
+      phases: tmpl.phases || [...new Set(tmpl.tasks.map(t => t.phase))],
+      tasks: tmpl.tasks,
+      created_by: user.name,
+      source_id: tmpl.id,
+    };
+    const { data } = await supabase.from("custom_templates").insert(payload).select().single();
+    if (data) {
+      setCustomTemplates(prev => [data, ...prev]);
+      setEditingTemplate(data);
+      setShowEditor(true);
+    }
+  };
+
   if (screen === "loading") return (
     <div style={{ minHeight: "100vh", background: C.blue, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <Logo height={48} />
@@ -911,6 +939,7 @@ export default function App() {
           onNew={() => setShowNew(true)}
           onNewTemplate={() => setShowBuilder(true)}
           onEditTemplate={(tmpl) => { setEditingTemplate(tmpl); setShowEditor(true); }}
+          onEditBuiltin={handleEditBuiltin}
           onLogout={handleLogout}
         />
       )}
